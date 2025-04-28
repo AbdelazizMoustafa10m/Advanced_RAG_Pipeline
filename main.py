@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+
+# Basic imports
+from re import T
+import sys
+import os
+import logging
+from multiprocessing import freeze_support
+
+# Use direct imports from the project root
+from core.config import UnifiedConfig, ParallelConfig, DocumentType
+from pipeline.orchestrator import PipelineOrchestrator
+from indexing.vector_store import ChromaVectorStoreAdapter
+from core.interfaces import IVectorStore
+    
+# LlamaIndex imports
+from llama_index.core.schema import MetadataMode
+from llama_index.core import Settings
+from llama_index.core.node_parser import SentenceSplitter
+
+# --- Standard Library Imports ---
+from dotenv import load_dotenv
+
+# --- Global Setup ---
+load_dotenv() # Load API keys from .env file
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.StreamHandler(sys.stdout) # Ensure logs go to console
+        # logging.FileHandler("rag_pipeline.log") # Optional: Log to file
+    ]
+)
+# Reduce verbosity from libraries if needed
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+# ------------------
+
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    # Apply multiprocessing guard
+    freeze_support()
+    logger.info("Starting Unified RAG Parser Example...")
+
+    # 1. --- Configuration ---
+    try:
+        # Create configuration object
+        # Adjust input_directory to point to the ACTUAL root
+        # containing your 'code_repository' and 'technical_docs' subdirs
+        # Import LLMConfig and LLMSettings for custom configuration
+        from core.config import LLMConfig, LLMSettings
+        
+        # Create a custom LLMConfig with selective metadata enrichment
+        llm_config = LLMConfig()
+        
+        # Set up the metadata LLM
+        llm_config.metadata_llm.enabled = False  # Enable the metadata LLM
+        llm_config.metadata_llm.model_name = os.getenv("METADATA_LLM_MODEL")
+        llm_config.metadata_llm.provider = os.getenv("METADATA_LLM_PROVIDER")
+        llm_config.metadata_llm.api_key_env_var = os.getenv("METADATA_LLM_API_KEY_ENV_VAR")
+        
+        # Disable the other LLMs
+        llm_config.query_llm.enabled = False
+        llm_config.coding_llm.enabled = False
+        
+        # Configure selective enrichment
+        llm_config.enrich_documents = False  # Disable metadata enrichment for Docling documents (PDF, DOCX, etc.)
+        llm_config.enrich_code = True        # Enable metadata enrichment for code documents
+
+        config = UnifiedConfig(
+            input_directory="./data", # Or "/path/to/your/data"
+            llm=llm_config, # Use the empty LLM config to avoid API key errors
+            parallel=ParallelConfig(max_workers=4) # Use max_workers from config
+        )
+        logger.info("Configuration loaded successfully.")
+        # You can print the config for verification: logger.debug(config)
+    except ValueError as e:
+        logger.error(f"Configuration validation error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Unexpected error loading config: {e}", exc_info=True)
+        sys.exit(1)
+
+    # Optional: Configure LlamaIndex Settings globally if needed (e.g., embedding model)
+    # try:
+    #     Settings.embed_model = HuggingFaceEmbedding(model_name=config.vector_store.embedding_model)
+    #     logger.info(f"Set embedding model: {config.vector_store.embedding_model}")
+    # except Exception as e:
+    #     logger.error(f"Failed to set embedding model: {e}", exc_info=True)
+    #     # Decide if this is critical or can proceed without embeddings
+
+    # 2. --- Pipeline Execution ---
+    processed_nodes = [] # Initialize
+    try:
+        logger.info("Initializing Pipeline Orchestrator...")
+        orchestrator = PipelineOrchestrator(config)
+        logger.info("Running the processing pipeline...")
+        # The orchestrator now handles loading, detecting, routing, processing, enriching
+        processed_nodes = orchestrator.run()
+        
+        # Count nodes by type for better statistics
+        code_nodes = [n for n in processed_nodes if n.metadata.get('node_type') == 'code']
+        document_nodes = [n for n in processed_nodes if n.metadata.get('node_type') == 'document']
+        unknown_nodes = [n for n in processed_nodes if n.metadata.get('node_type') not in ['code', 'document']]
+        
+        # Log detailed statistics
+        logger.info(f"Pipeline finished. Processed {len(processed_nodes)} total nodes:")
+        logger.info(f"  - {len(code_nodes)} code nodes from CodeProcessor")
+        logger.info(f"  - {len(document_nodes)} document nodes from DoclingChunker")
+        if unknown_nodes:
+            logger.info(f"  - {len(unknown_nodes)} nodes with unknown type")
+    except Exception as e:
+        logger.error(f"Pipeline execution failed: {e}", exc_info=True)
+        sys.exit(1)
+
+    if not processed_nodes:
+        logger.warning("No nodes were generated by the pipeline. Exiting.")
+        sys.exit(0)
+
+       # --- Output ---
+    # Print a summary of processed nodes
+    print("\n=== Node Processing Summary ===")
+    print(f"Total nodes processed: {len(processed_nodes)}")
+    print(f"Code nodes: {len([n for n in processed_nodes if n.metadata.get('node_type') == 'code'])}")
+    print(f"Document nodes: {len([n for n in processed_nodes if n.metadata.get('node_type') == 'document'])}")
+    print(f"Unknown type nodes: {len([n for n in processed_nodes if n.metadata.get('node_type') not in ['code', 'document']])}")
+    print("============================")
+    
+    print("\n--- Saving All Enriched Nodes to File ---")
+    
+    # Save all nodes to a file with the requested format
+    output_file_path = "node_contents.txt"
+    with open(output_file_path, "w") as f:
+        for i, node in enumerate(processed_nodes):
+            f.write(f"--- Node {i+1}/{len(processed_nodes)} ---\n")
+            f.write(node.get_content(metadata_mode=MetadataMode.ALL))
+            f.write("\n" + "-" * 30 + "\n" + "-" * 30 + "\n\n")
+            
+            f.write("The LLM sees this: \n")
+            f.write(node.get_content(metadata_mode=MetadataMode.LLM))
+            f.write("\n" + "-" * 30 + "\n" + "-" * 30 + "\n\n")
+            
+            f.write("The Embedding model sees this: \n")
+            f.write(node.get_content(metadata_mode=MetadataMode.EMBED))
+            f.write("\n" + "-" * 30 + "\n" + "-" * 30 + "\n\n")
+    
+    print(f"All node contents have been saved to {output_file_path}")

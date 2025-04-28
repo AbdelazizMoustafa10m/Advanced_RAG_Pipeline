@@ -1,0 +1,17 @@
+nest_asyncio
+python-dotenv
+llama-index
+llama-index-llms-groq
+docling
+llama-index-readers-docling
+llama-index-node-parser-docling
+llama-index-core
+llama-index-embeddings-huggingface
+tree-sitter-languages
+tree_sitter_language_pack
+llama-index-llms-openai
+llama-index-llms-google-genai
+llama-index-llms-huggingface
+llama-index-llms-anthropic
+chromadb
+llama-index-vector-stores-chroma
