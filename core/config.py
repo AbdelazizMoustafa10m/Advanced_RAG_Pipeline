@@ -213,6 +213,13 @@ class QueryConfig:
     # Language detection for code queries
     detect_language_in_query: bool = True
 
+# --- NEW: Registry Configuration ---
+@dataclass
+class RegistryConfig:
+    """Configuration for document registry."""
+    enabled: bool = True
+    db_path: Optional[str] = None  # If None, will default to output_dir/document_registry.db
+    reset_stalled_after_seconds: int = 3600  # Reset stalled docs after 1 hour
 
 # --- REVISED: Main Unified Configuration ---
 @dataclass
@@ -233,6 +240,7 @@ class UnifiedConfig:
     llm: LLMConfig = field(default_factory=LLMConfig) # Uses the new LLMConfig
     vector_store: VectorStoreConfig = field(default_factory=VectorStoreConfig)
     query: QueryConfig = field(default_factory=QueryConfig)
+    registry: RegistryConfig = field(default_factory=RegistryConfig)
 
     def __post_init__(self):
         """Validate configuration after initialization."""

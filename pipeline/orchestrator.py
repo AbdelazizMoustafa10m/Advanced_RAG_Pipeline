@@ -7,6 +7,9 @@ from typing import List, Dict, Optional, Set, Tuple
 from collections import defaultdict
 from llama_index.core.schema import Document, TextNode
 
+from registry.document_registry import DocumentRegistry
+from registry.status import ProcessingStatus
+
 from core.config import UnifiedConfig, DocumentType
 from core.interfaces import IDocumentLoader, IDocumentProcessor # Adjust imports
 from detectors.detector_service import DetectorService
@@ -30,10 +33,13 @@ logger = logging.getLogger(__name__)
 class PipelineOrchestrator:
     """Orchestrates the unified document processing pipeline."""
 
-    def __init__(self, config: UnifiedConfig, llm_provider=None):
+    def __init__(self, config: UnifiedConfig, document_registry=None, llm_provider=None):
         """Initialize the orchestrator with configuration."""
         self.config = config
         self.llm_provider = llm_provider or DefaultLLMProvider(config.llm)
+        
+        # Initialize document registry if provided
+        self.document_registry = document_registry
         
         # Initialize DoclingReader for document files
         docling_reader = self._initialize_docling_reader(config.docling)
@@ -255,19 +261,99 @@ class PipelineOrchestrator:
             
         return document_groups
     
-    def run(self) -> List[TextNode]:
+    def run(self):
         """Runs the full ingestion pipeline."""
         start_time = time.time()
         self.processing_start_time = start_time
+        logger.info(f"Starting unified pipeline run at {start_time}")
         
-        logger.info("Starting document processing pipeline...")
+        # Reset any stalled documents if registry is available
+        if self.document_registry and self.config.registry.enabled:
+            reset_count = self.document_registry.reset_stalled_processing(
+                max_processing_time=self.config.registry.reset_stalled_after_seconds
+            )
+            if reset_count > 0:
+                logger.info(f"Reset {reset_count} stalled documents in registry")
         
-        # 1. Load documents
-        logger.info(f"Loading documents from {self.config.input_directory}...")
-        documents = self.loader.load_documents(self.config.input_directory)
+        # 1. First, get a list of files without loading content
+        input_dir = self.config.input_directory
+        logger.info(f"Scanning for documents in {input_dir}...")
+        
+        documents_to_load = []
+        skipped_files = []
+        
+        # For directory input, get all files
+        if os.path.isdir(input_dir):
+            all_files = []
+            for root, _, files in os.walk(input_dir):
+                for f in files:
+                    file_path = os.path.join(root, f)
+                    # Skip hidden files and directories
+                    if not os.path.basename(file_path).startswith('.') and os.path.isfile(file_path):
+                        # Store the absolute path for loading
+                        all_files.append(file_path)
+            
+            # If registry is available, check each file before loading
+            if self.document_registry and self.config.registry.enabled:
+                documents_to_load = []
+                for abs_path in all_files:
+                    # For registry, we need the path format './data/file.ext'
+                    # Extract just the base directory (data) and filename
+                    base_dir = os.path.basename(input_dir)
+                    rel_filename = os.path.basename(abs_path)
+                    reg_path = f"./{base_dir}/{rel_filename}"
+                    
+                    try:
+                        # Get file stats for a quick check
+                        file_stats = os.stat(abs_path)
+                        file_size = file_stats.st_size
+                        file_mtime = file_stats.st_mtime
+                        
+                        # Get document status from registry
+                        doc_status = self.document_registry.get_document_status(reg_path)
+                        
+                        if doc_status and doc_status.get("status") == ProcessingStatus.COMPLETED.value:
+                            # Document exists and is completed, check if should process based on modification time
+                            last_processed = doc_status.get("last_processed", 0)
+                            
+                            if last_processed > file_mtime:  # File hasn't changed since last processing
+                                skipped_files.append(reg_path)
+                                logger.info(f"Skipping already processed file (cached): {reg_path}")
+                                continue
+                            else:
+                                logger.info(f"File has been modified since last processing: {reg_path}")
+                    except Exception as e:
+                        logger.warning(f"Error checking file status, will process: {reg_path}: {e}")
+                    
+                    # If we got here, we need to process this file
+                    documents_to_load.append(abs_path)
+            else:
+                # No registry, load all files
+                documents_to_load = all_files
+        else:
+            # Single file case
+            documents_to_load = [input_dir]
+        
+        logger.info(f"Identified {len(documents_to_load)} documents to load, skipped {len(skipped_files)} already processed documents")
+        
+        # Skip loading if nothing to process
+        if not documents_to_load:
+            logger.info("No new documents to process. Pipeline completed with 0 nodes.")
+            return []
+            
+        # Now load only the documents we need to process
+        logger.info(f"Loading {len(documents_to_load)} documents...")
+        documents = []
+        for doc_path in documents_to_load:
+            try:
+                docs = self.loader.load_documents(doc_path)
+                if docs:
+                    documents.extend(docs)
+            except Exception as e:
+                logger.error(f"Error loading document {doc_path}: {e}")
         
         if not documents:
-            logger.warning("No documents found. Pipeline completed with 0 nodes.")
+            logger.warning("No documents loaded successfully. Pipeline completed with 0 nodes.")
             return []
             
         self.total_documents = len(documents)
@@ -339,14 +425,53 @@ class PipelineOrchestrator:
                 logger.info(f"Processing document group: {original_path}")
                 logger.info(f"This group contains {len(doc_group)} document parts")
                 
+                # Check document registry if available
+                if self.document_registry and self.config.registry.enabled:
+                    # Take the first document to get content for hash check
+                    sample_doc = doc_group[0]
+                    doc_content = sample_doc.text
+                    
+                    # Check if we should process this document
+                    if not self.document_registry.should_process(original_path, content=doc_content):
+                        logger.info(f"Skipping already processed document: {original_path}")
+                        continue
+                    
+                    # Register document and mark as processing
+                    # Look for document type in various metadata fields with priority
+                    doc_type = sample_doc.metadata.get("node_type", 
+                                sample_doc.metadata.get("file_type", 
+                                    sample_doc.metadata.get("source_content_type", "unknown")))
+                    
+                    # Normalize document type - ensure it's either 'code' or 'document'
+                    if doc_type.lower() == "code" or ".py" in original_path.lower():
+                        doc_type = "code"
+                    else:
+                        doc_type = "document"
+                        
+                    self.document_registry.register_document(
+                        doc_id=original_path,
+                        content=doc_content,
+                        document_type=doc_type,
+                        source=sample_doc.metadata.get("source", original_path),
+                        metadata={
+                            "document_type": doc_type,
+                            "node_type": doc_type,  # Ensure consistency
+                            "language": sample_doc.metadata.get("language", "unknown"),
+                            "processor": sample_doc.metadata.get("processor", "unknown")
+                        }
+                    )
+                    self.document_registry.update_status(original_path, ProcessingStatus.PROCESSING)
+                
                 # Process each document part through the router
                 for doc in doc_group:
                     # Set the file_type in metadata to help the router
-                    doc_type = doc.metadata.get("source_content_type", "unknown")
+                    doc_type = doc.metadata.get("node_type", doc.metadata.get("file_type", doc.metadata.get("source_content_type", "unknown")))
                     if doc_type == "code":
                         doc.metadata["file_type"] = "code"
+                        doc.metadata["node_type"] = "code"  # Ensure node_type is set
                     else:
                         doc.metadata["file_type"] = "document"
+                        doc.metadata["node_type"] = "document"  # Ensure node_type is set
                 
                 # Process the document group through the pipeline
                 processed_nodes = pipeline.run(documents=doc_group)
@@ -354,6 +479,36 @@ class PipelineOrchestrator:
                 # Add the processed nodes to our results
                 all_processed_nodes.extend(processed_nodes)
                 self.processed_nodes.extend(processed_nodes)  # Store for recovery
+                
+                # Update document registry with successful processing
+                if self.document_registry and self.config.registry.enabled:
+                    # Get the document type for metadata - use the same logic as when registering
+                    doc_type = doc_group[0].metadata.get("node_type", 
+                                doc_group[0].metadata.get("file_type", 
+                                    doc_group[0].metadata.get("source_content_type", "unknown")))
+                    
+                    # Normalize document type
+                    if doc_type.lower() == "code" or ".py" in original_path.lower():
+                        doc_type = "code"
+                        processor_name = "CodeProcessor"
+                    else:
+                        doc_type = "document"
+                        processor_name = "TechnicalDocumentProcessor"
+                    
+                    # Update metadata with processing results
+                    metadata_updates = {
+                        "chunk_count": len(processed_nodes),
+                        "processor": processor_name,
+                        "processing_time": time.time() - self.processing_start_time
+                    }
+                    
+                    # Mark document as successfully completed
+                    self.document_registry.update_status(
+                        original_path, 
+                        ProcessingStatus.COMPLETED,
+                        metadata_updates=metadata_updates
+                    )
+                    logger.info(f"Updated document registry for {original_path}: COMPLETED")
                 
                 # Update progress
                 self.processed_documents += 1
@@ -368,6 +523,15 @@ class PipelineOrchestrator:
                     logger.info(f"Estimated time remaining: {estimated_remaining:.2f} seconds")
                 
             except Exception as e:
+                # Update document registry with failure status
+                if self.document_registry and self.config.registry.enabled:
+                    self.document_registry.update_status(
+                        original_path,
+                        ProcessingStatus.FAILED,
+                        error_message=str(e)
+                    )
+                    logger.info(f"Updated document registry for {original_path}: FAILED")
+                
                 logger.error(f"Error processing document group {original_path}: {e}")
                 # Continue with next document group
                 continue
