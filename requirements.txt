@@ -15,3 +15,6 @@ llama-index-llms-huggingface
 llama-index-llms-anthropic
 chromadb
 llama-index-vector-stores-chroma
+pytest
+pytest-mock
+reportlab
