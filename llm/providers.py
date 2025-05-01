@@ -34,14 +34,19 @@ class DefaultLLMProvider(ILLMProvider):
         # Get the settings for the requested role
         settings: Optional[LLMSettings] = getattr(self.config, role, None)
 
-        if settings is None or settings.model_name is None:
-            # Handle case where the role (e.g., coding_llm) is not configured
-            logger.error(f"LLM settings for role '{role}' are not configured or model_name is missing.")
-            raise ValueError(f"LLM for role '{role}' not configured.")
+        # Check if settings exists
+        if settings is None:
+            logger.error(f"LLM settings for role '{role}' are not configured.")
+            return None
             
         # Check if LLM is enabled for this role
         if not settings.enabled:
             logger.info(f"LLM for role '{role}' is disabled in configuration. Returning None.")
+            return None
+            
+        # Check if model_name is configured
+        if settings.model_name is None:
+            logger.warning(f"Model name for LLM role '{role}' is missing. Returning None.")
             return None
 
         api_key = settings.api_key # Get API key via property

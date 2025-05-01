@@ -27,6 +27,7 @@ from llama_index.node_parser.docling import DoclingNodeParser
 from processors.document_router import DocumentTypeRouter
 from processors.code.metadata_generator import CodeMetadataGenerator
 from processors.document.metadata_generator import DoclingMetadataGenerator
+from processors.document.docling_metadata_formatter import DoclingMetadataFormatter, FormattingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,16 @@ class PipelineOrchestrator:
         
         # Initialize document registry if provided
         self.document_registry = document_registry
+
+        # Track processing progress
+        self.total_documents = 0
+        self.processed_documents = 0
+        self.processing_start_time = 0
+
+        # Store processed nodes for recovery in case of timeout or error
+        self.processed_nodes: List[TextNode] = []
+
+        logger.info("Initializing pipeline components...")
         
         # Initialize DoclingReader for document files
         docling_reader = self._initialize_docling_reader(config.docling)
@@ -52,9 +63,11 @@ class PipelineOrchestrator:
             code_processor_config=config.code_processor,
             llm=self.llm_provider
         )
+        logger.info("Initialized EnhancedDirectoryLoader")
         
         # Initialize enhanced detector service
         self.detector = EnhancedDetectorService(config.detector)
+        logger.info("Initialized EnhancedDetectorService")
         
         # Initialize processors
         self.code_processor = CodeProcessor(
@@ -62,23 +75,68 @@ class PipelineOrchestrator:
             config.code_processor,
             llm_config=config.llm  # Pass LLM config for enrichment flags
         )
-        
+        logger.info("Initialized CodeProcessor")
         # Pass the correct config object to the document processor
         self.document_processor = TechnicalDocumentProcessor(
             config.docling,  # This is the DoclingConfig object
             self.llm_provider,
             llm_config=config.llm  # Pass LLM config for enrichment flags
         )
-        
-        # Store processed nodes for recovery in case of timeout or error
-        self.processed_nodes: List[TextNode] = []
-        
-        # Track processing progress
-        self.total_documents = 0
-        self.processed_documents = 0
-        self.processing_start_time = 0
+        logger.info("Initialized TechnicalDocumentProcessor")
 
-        # Add more processors if needed
+        # Initialize DoclingNodeParser for document files
+        self.docling_parser = DoclingNodeParser()
+        logger.info("Initialized DoclingNodeParser")
+
+        # Get the enrichers from the respective processors
+        document_metadata_enricher = getattr(self.document_processor, 'enricher', None)
+        code_metadata_enricher = getattr(self.code_processor, 'metadata_generator', None)    
+
+        # Log what enrichers we found
+        if document_metadata_enricher:
+            logger.info(f"Using document metadata enricher: {type(document_metadata_enricher).__name__}")
+        else:
+            logger.info("No document metadata enricher available (enrich_documents=False or LLM disabled)")
+
+        if code_metadata_enricher:
+            logger.info(f"Using code metadata enricher: {type(code_metadata_enricher).__name__}")
+        else:
+            logger.info("No code metadata enricher available (enrich_code=False or LLM disabled)")
+
+        # Initialize the Docling metadata formatter (runs BEFORE router/enrichment)
+        self.docling_formatter = DoclingMetadataFormatter(
+            config=FormattingConfig(
+                include_in_llm=['formatted_source', 'formatted_location', 'formatted_headings', 'formatted_label', 'file_type', 'node_type'],
+                include_in_embed=['formatted_source', 'formatted_location', 'formatted_headings', 'formatted_label']
+            )
+        )
+        logger.info("Initialized DoclingMetadataFormatter")    
+
+        # Create the router with our processors and enrichers
+        # The router itself will call the appropriate processor's process_document,
+        # which internally handles enrichment if the enricher instance exists.
+        self.document_router = DocumentTypeRouter(
+            docling_parser=self.docling_parser,
+            code_processor=self.code_processor, # Pass the whole processor
+            # Pass enricher instances; router will check if they are None before calling enrich
+            document_metadata_enricher=document_metadata_enricher,
+            code_metadata_enricher=code_metadata_enricher
+        )
+        logger.info("Initialized DocumentTypeRouter")
+
+        # Create the pipeline with the correct order of transformations
+        self.pipeline = IngestionPipeline(
+            transformations=[
+                self.document_router,    # This will route documents to the appropriate parser
+                self.docling_formatter,  # This will format Docling metadata after parsing
+            ]
+        )
+        logger.info("Initialized complete IngestionPipeline")
+
+        # Log initialization completion
+        logger.info("PipelineOrchestrator initialization complete")
+
+        # --- Start of Method Definitions ---
 
     def _initialize_docling_reader(self, docling_config) -> Optional[DoclingReader]:
         """Initialize the DoclingReader with appropriate configuration."""
@@ -174,6 +232,225 @@ class PipelineOrchestrator:
         logger.warning(f"Using last resort fallback path: {fallback}")
         return fallback
         
+    def _load_documents(self, input_dir):
+        """Load documents from the input directory with registry checking.
+        
+        Args:
+            input_dir: Path to the input directory or file to process.
+            
+        Returns:
+            tuple: (loaded_documents, skipped_count)
+                - loaded_documents: List of loaded Document objects
+                - skipped_count: Number of skipped files (already processed)
+        """
+        logger.info(f"Scanning for documents in {input_dir}...")
+        
+        documents_to_load = []
+        skipped_files = []
+        
+        # For directory input, get all files
+        if os.path.isdir(input_dir):
+            all_files = []
+            for root, _, files in os.walk(input_dir):
+                for f in files:
+                    file_path = os.path.join(root, f)
+                    # Skip hidden files and directories
+                    if not os.path.basename(file_path).startswith('.') and os.path.isfile(file_path):
+                        # Store the absolute path for loading
+                        all_files.append(file_path)
+            
+            # If registry is available, check each file before loading
+            if self.document_registry and self.config.registry.enabled:
+                documents_to_load = []
+                for abs_path in all_files:
+                    # For registry, we need the path format './data/file.ext'
+                    # Get the proper relative path from input_dir to the file
+                    rel_path = os.path.relpath(abs_path, os.path.dirname(input_dir))
+                    reg_path = f"./{rel_path}"
+                    
+                    try:
+                        # Get file stats for a quick check
+                        file_stats = os.stat(abs_path)
+                        file_size = file_stats.st_size
+                        file_mtime = file_stats.st_mtime
+                        
+                        # Get document status from registry
+                        doc_status = self.document_registry.get_document_status(reg_path)
+                        
+                        if doc_status and doc_status.get("status") == ProcessingStatus.COMPLETED.value:
+                            # Document exists and is completed, check if should process based on modification time
+                            last_processed = doc_status.get("last_processed", 0)
+                            
+                            if last_processed > file_mtime:  # File hasn't changed since last processing
+                                skipped_files.append(reg_path)
+                                logger.info(f"Skipping already processed file (cached): {reg_path}")
+                                continue
+                            else:
+                                logger.info(f"File has been modified since last processing: {reg_path}")
+                    except Exception as e:
+                        logger.warning(f"Error checking file status, will process: {reg_path}: {e}")
+                    
+                    # If we got here, we need to process this file
+                    documents_to_load.append(abs_path)
+            else:
+                # No registry, load all files
+                documents_to_load = all_files
+        else:
+            # Single file case
+            documents_to_load = [input_dir]
+        
+        logger.info(f"Identified {len(documents_to_load)} documents to load, skipped {len(skipped_files)} already processed documents")
+        
+        # Skip loading if nothing to process
+        if not documents_to_load:
+            return [], len(skipped_files)
+            
+        # Now load only the documents we need to process
+        logger.info(f"Loading {len(documents_to_load)} documents...")
+        documents = []
+        for doc_path in documents_to_load:
+            try:
+                docs = self.loader.load_documents(doc_path)
+                if docs:
+                    documents.extend(docs)
+            except Exception as e:
+                logger.error(f"Error loading document {doc_path}: {e}")
+        
+        logger.info(f"Loaded {len(documents)} documents")
+        return documents, len(skipped_files)
+        
+    def _process_document_groups(self, grouped_documents: Dict[str, List[Document]], original_document_count: int) -> List[TextNode]:
+        """Process document groups through the pipeline.
+        
+        Args:
+            grouped_documents: Dictionary mapping original document paths to lists of document parts
+            original_document_count: Total number of original documents (not parts)
+            
+        Returns:
+            List[TextNode]: All processed nodes from all document groups
+        """
+        # Initialize result container
+        all_processed_nodes = []
+        
+        # Process documents by group to maintain the grouping benefits
+        for original_path, doc_group in grouped_documents.items():
+            try:
+                logger.info(f"Processing document group: {original_path}")
+                logger.info(f"This group contains {len(doc_group)} document parts")
+                
+                # Check document registry if available
+                if self.document_registry and self.config.registry.enabled:
+                    # Take the first document to get content for hash check
+                    sample_doc = doc_group[0]
+                    doc_content = sample_doc.text
+                    
+                    # Check if we should process this document
+                    if not self.document_registry.should_process(original_path, content=doc_content):
+                        logger.info(f"Skipping already processed document: {original_path}")
+                        continue
+                    
+                    # Register document and mark as processing
+                    # Look for document type in various metadata fields with priority
+                    doc_type = sample_doc.metadata.get("node_type", 
+                                sample_doc.metadata.get("file_type", 
+                                    sample_doc.metadata.get("source_content_type", "unknown")))
+                    
+                    # Normalize document type - ensure it's either 'code' or 'document'
+                    if doc_type.lower() == "code" or ".py" in original_path.lower():
+                        doc_type = "code"
+                    else:
+                        doc_type = "document"
+                        
+                    self.document_registry.register_document(
+                        doc_id=original_path,
+                        content=doc_content,
+                        document_type=doc_type,
+                        source=sample_doc.metadata.get("source", original_path),
+                        metadata={
+                            "document_type": doc_type,
+                            "node_type": doc_type,  # Ensure consistency
+                            "language": sample_doc.metadata.get("language", "unknown"),
+                            "processor": sample_doc.metadata.get("processor", "unknown")
+                        }
+                    )
+                    self.document_registry.update_status(original_path, ProcessingStatus.PROCESSING)
+                
+                # Process each document part through the router
+                for doc in doc_group:
+                    # Set the file_type in metadata to help the router
+                    doc_type = doc.metadata.get("node_type", doc.metadata.get("file_type", doc.metadata.get("source_content_type", "unknown")))
+                    if doc_type == "code":
+                        doc.metadata["file_type"] = "code"
+                        doc.metadata["node_type"] = "code"  # Ensure node_type is set
+                    else:
+                        doc.metadata["file_type"] = "document"
+                        doc.metadata["node_type"] = "document"  # Ensure node_type is set
+                
+                # Process the document group through the pipeline
+                processed_nodes = self.pipeline.run(documents=doc_group)
+                
+                # Add the processed nodes to our results
+                all_processed_nodes.extend(processed_nodes)
+                self.processed_nodes.extend(processed_nodes)  # Store for recovery
+                
+                # Update document registry with successful processing
+                if self.document_registry and self.config.registry.enabled:
+                    # Get the document type for metadata - use the same logic as when registering
+                    doc_type = doc_group[0].metadata.get("node_type", 
+                                doc_group[0].metadata.get("file_type", 
+                                    doc_group[0].metadata.get("source_content_type", "unknown")))
+                    
+                    # Normalize document type
+                    if doc_type.lower() == "code" or ".py" in original_path.lower():
+                        doc_type = "code"
+                        processor_name = "CodeProcessor"
+                    else:
+                        doc_type = "document"
+                        processor_name = "TechnicalDocumentProcessor"
+                    
+                    # Update metadata with processing results
+                    metadata_updates = {
+                        "chunk_count": len(processed_nodes),
+                        "processor": processor_name,
+                        "processing_time": time.time() - self.processing_start_time
+                    }
+                    
+                    # Mark document as successfully completed
+                    self.document_registry.update_status(
+                        original_path, 
+                        ProcessingStatus.COMPLETED,
+                        metadata_updates=metadata_updates
+                    )
+                    logger.info(f"Updated document registry for {original_path}: COMPLETED")
+                
+                # Update progress
+                self.processed_documents += 1
+                elapsed = time.time() - self.processing_start_time
+                logger.info(f"Progress: {self.processed_documents}/{self.total_documents} documents processed in {elapsed:.2f}s")
+                
+                # Log estimated time remaining
+                if self.processed_documents > 1:
+                    docs_per_second = self.processed_documents / elapsed
+                    remaining_docs = original_document_count - self.processed_documents
+                    estimated_remaining = remaining_docs / docs_per_second if docs_per_second > 0 else 0
+                    logger.info(f"Estimated time remaining: {estimated_remaining:.2f} seconds")
+                
+            except Exception as e:
+                # Update document registry with failure status
+                if self.document_registry and self.config.registry.enabled:
+                    self.document_registry.update_status(
+                        original_path,
+                        ProcessingStatus.FAILED,
+                        error_message=str(e)
+                    )
+                    logger.info(f"Updated document registry for {original_path}: FAILED")
+                
+                logger.error(f"Error processing document group {original_path}: {e}")
+                # Continue with next document group
+                continue
+        
+        return all_processed_nodes
+            
     def _group_document_parts(self, documents: List[Document]) -> Dict[str, List[Document]]:
         """Group document parts by their original document path."""
         document_groups = defaultdict(list)
@@ -316,88 +593,15 @@ class PipelineOrchestrator:
             if reset_count > 0:
                 logger.info(f"Reset {reset_count} stalled documents in registry")
         
-        # 1. First, get a list of files without loading content
-        input_dir = self.config.input_directory
-        logger.info(f"Scanning for documents in {input_dir}...")
+        # 1. Load documents with registry checking
+        documents, skipped_count = self._load_documents(self.config.input_directory)
         
-        documents_to_load = []
-        skipped_files = []
-        
-        # For directory input, get all files
-        if os.path.isdir(input_dir):
-            all_files = []
-            for root, _, files in os.walk(input_dir):
-                for f in files:
-                    file_path = os.path.join(root, f)
-                    # Skip hidden files and directories
-                    if not os.path.basename(file_path).startswith('.') and os.path.isfile(file_path):
-                        # Store the absolute path for loading
-                        all_files.append(file_path)
-            
-            # If registry is available, check each file before loading
-            if self.document_registry and self.config.registry.enabled:
-                documents_to_load = []
-                for abs_path in all_files:
-                    # For registry, we need the path format './data/file.ext'
-                    # Get the proper relative path from input_dir to the file
-                    rel_path = os.path.relpath(abs_path, os.path.dirname(input_dir))
-                    reg_path = f"./{rel_path}"
-                    
-                    try:
-                        # Get file stats for a quick check
-                        file_stats = os.stat(abs_path)
-                        file_size = file_stats.st_size
-                        file_mtime = file_stats.st_mtime
-                        
-                        # Get document status from registry
-                        doc_status = self.document_registry.get_document_status(reg_path)
-                        
-                        if doc_status and doc_status.get("status") == ProcessingStatus.COMPLETED.value:
-                            # Document exists and is completed, check if should process based on modification time
-                            last_processed = doc_status.get("last_processed", 0)
-                            
-                            if last_processed > file_mtime:  # File hasn't changed since last processing
-                                skipped_files.append(reg_path)
-                                logger.info(f"Skipping already processed file (cached): {reg_path}")
-                                continue
-                            else:
-                                logger.info(f"File has been modified since last processing: {reg_path}")
-                    except Exception as e:
-                        logger.warning(f"Error checking file status, will process: {reg_path}: {e}")
-                    
-                    # If we got here, we need to process this file
-                    documents_to_load.append(abs_path)
-            else:
-                # No registry, load all files
-                documents_to_load = all_files
-        else:
-            # Single file case
-            documents_to_load = [input_dir]
-        
-        logger.info(f"Identified {len(documents_to_load)} documents to load, skipped {len(skipped_files)} already processed documents")
-        
-        # Skip loading if nothing to process
-        if not documents_to_load:
-            logger.info("No new documents to process. Pipeline completed with 0 nodes.")
-            return []
-            
-        # Now load only the documents we need to process
-        logger.info(f"Loading {len(documents_to_load)} documents...")
-        documents = []
-        for doc_path in documents_to_load:
-            try:
-                docs = self.loader.load_documents(doc_path)
-                if docs:
-                    documents.extend(docs)
-            except Exception as e:
-                logger.error(f"Error loading document {doc_path}: {e}")
-        
+        # Return early if no documents to process
         if not documents:
-            logger.warning("No documents loaded successfully. Pipeline completed with 0 nodes.")
+            logger.info("No documents to process. Pipeline completed with 0 nodes.")
             return []
             
         self.total_documents = len(documents)
-        logger.info(f"Loaded {len(documents)} documents")
         
         # Group document parts by their original document
         # This helps avoid redundant processing of the same document
@@ -408,173 +612,7 @@ class PipelineOrchestrator:
         logger.info(f"Detected {original_document_count} original documents (some split into parts)")
         
         # 2. Process documents using the document router
-        all_processed_nodes = []
-        
-        #------------------------ Create an ingestion pipeline with the document router---------------------------#
-
-        # Initialize DoclingNodeParser for document files
-        docling_parser = DoclingNodeParser()
-        
-        # Create metadata enrichers if LLM is available and enabled
-        document_metadata_enricher = None
-        code_metadata_enricher = None
-        
-        if self.llm_provider:
-            try:
-                # Get the LLM instance
-                metadata_llm = self.llm_provider.get_metadata_llm()
-                if metadata_llm:
-                    # Check enrichment flags in config
-                    enrich_documents = getattr(self.config.llm, 'enrich_documents', True)
-                    enrich_code = getattr(self.config.llm, 'enrich_code', True)
-                    
-                    # Create document metadata enricher if document enrichment is enabled
-                    if enrich_documents:
-                        document_metadata_enricher = DoclingMetadataGenerator(metadata_llm, num_questions=2)
-                        logger.info("Initialized DoclingMetadataGenerator for document nodes")
-                    else:
-                        logger.info("Document metadata enrichment is disabled in configuration")
-                    
-                    # Create code metadata enricher if code enrichment is enabled
-                    if enrich_code:
-                        code_metadata_enricher = CodeMetadataGenerator(metadata_llm)
-                        logger.info("Initialized CodeMetadataGenerator for code nodes")
-                    else:
-                        logger.info("Code metadata enrichment is disabled in configuration")
-            except Exception as e:
-                logger.warning(f"Failed to initialize metadata enrichers: {e}")
-        
-        # Create the router with our processors and enrichers
-        document_router = DocumentTypeRouter(
-            docling_parser=docling_parser, 
-            code_processor=self.code_processor,
-            document_metadata_enricher=document_metadata_enricher,
-            code_metadata_enricher=code_metadata_enricher
-        )
-        
-        # Create the pipeline with the router
-        pipeline = IngestionPipeline(
-            transformations=[
-                document_router,  # This will route documents to the appropriate parser
-            ]
-        )
-        
-        # Process documents by group to maintain the grouping benefits
-        for original_path, doc_group in grouped_documents.items():
-            try:
-                logger.info(f"Processing document group: {original_path}")
-                logger.info(f"This group contains {len(doc_group)} document parts")
-                
-                # Check document registry if available
-                if self.document_registry and self.config.registry.enabled:
-                    # Take the first document to get content for hash check
-                    sample_doc = doc_group[0]
-                    doc_content = sample_doc.text
-                    
-                    # Check if we should process this document
-                    if not self.document_registry.should_process(original_path, content=doc_content):
-                        logger.info(f"Skipping already processed document: {original_path}")
-                        continue
-                    
-                    # Register document and mark as processing
-                    # Look for document type in various metadata fields with priority
-                    doc_type = sample_doc.metadata.get("node_type", 
-                                sample_doc.metadata.get("file_type", 
-                                    sample_doc.metadata.get("source_content_type", "unknown")))
-                    
-                    # Normalize document type - ensure it's either 'code' or 'document'
-                    if doc_type.lower() == "code" or ".py" in original_path.lower():
-                        doc_type = "code"
-                    else:
-                        doc_type = "document"
-                        
-                    self.document_registry.register_document(
-                        doc_id=original_path,
-                        content=doc_content,
-                        document_type=doc_type,
-                        source=sample_doc.metadata.get("source", original_path),
-                        metadata={
-                            "document_type": doc_type,
-                            "node_type": doc_type,  # Ensure consistency
-                            "language": sample_doc.metadata.get("language", "unknown"),
-                            "processor": sample_doc.metadata.get("processor", "unknown")
-                        }
-                    )
-                    self.document_registry.update_status(original_path, ProcessingStatus.PROCESSING)
-                
-                # Process each document part through the router
-                for doc in doc_group:
-                    # Set the file_type in metadata to help the router
-                    doc_type = doc.metadata.get("node_type", doc.metadata.get("file_type", doc.metadata.get("source_content_type", "unknown")))
-                    if doc_type == "code":
-                        doc.metadata["file_type"] = "code"
-                        doc.metadata["node_type"] = "code"  # Ensure node_type is set
-                    else:
-                        doc.metadata["file_type"] = "document"
-                        doc.metadata["node_type"] = "document"  # Ensure node_type is set
-                
-                # Process the document group through the pipeline
-                processed_nodes = pipeline.run(documents=doc_group)
-                
-                # Add the processed nodes to our results
-                all_processed_nodes.extend(processed_nodes)
-                self.processed_nodes.extend(processed_nodes)  # Store for recovery
-                
-                # Update document registry with successful processing
-                if self.document_registry and self.config.registry.enabled:
-                    # Get the document type for metadata - use the same logic as when registering
-                    doc_type = doc_group[0].metadata.get("node_type", 
-                                doc_group[0].metadata.get("file_type", 
-                                    doc_group[0].metadata.get("source_content_type", "unknown")))
-                    
-                    # Normalize document type
-                    if doc_type.lower() == "code" or ".py" in original_path.lower():
-                        doc_type = "code"
-                        processor_name = "CodeProcessor"
-                    else:
-                        doc_type = "document"
-                        processor_name = "TechnicalDocumentProcessor"
-                    
-                    # Update metadata with processing results
-                    metadata_updates = {
-                        "chunk_count": len(processed_nodes),
-                        "processor": processor_name,
-                        "processing_time": time.time() - self.processing_start_time
-                    }
-                    
-                    # Mark document as successfully completed
-                    self.document_registry.update_status(
-                        original_path, 
-                        ProcessingStatus.COMPLETED,
-                        metadata_updates=metadata_updates
-                    )
-                    logger.info(f"Updated document registry for {original_path}: COMPLETED")
-                
-                # Update progress
-                self.processed_documents += 1
-                elapsed = time.time() - self.processing_start_time
-                logger.info(f"Progress: {self.processed_documents}/{self.total_documents} documents processed in {elapsed:.2f}s")
-                
-                # Log estimated time remaining
-                if self.processed_documents > 1:
-                    docs_per_second = self.processed_documents / elapsed
-                    remaining_docs = original_document_count - self.processed_documents
-                    estimated_remaining = remaining_docs / docs_per_second if docs_per_second > 0 else 0
-                    logger.info(f"Estimated time remaining: {estimated_remaining:.2f} seconds")
-                
-            except Exception as e:
-                # Update document registry with failure status
-                if self.document_registry and self.config.registry.enabled:
-                    self.document_registry.update_status(
-                        original_path,
-                        ProcessingStatus.FAILED,
-                        error_message=str(e)
-                    )
-                    logger.info(f"Updated document registry for {original_path}: FAILED")
-                
-                logger.error(f"Error processing document group {original_path}: {e}")
-                # Continue with next document group
-                continue
+        all_processed_nodes = self._process_document_groups(grouped_documents, original_document_count)
         
         # 3. Optional: Apply common post-processing/standardization enrichers if needed
         # enricher = Standardizer(...)

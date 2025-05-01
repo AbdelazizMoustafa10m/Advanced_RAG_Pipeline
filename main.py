@@ -62,7 +62,7 @@ if __name__ == "__main__":
         llm_config = LLMConfig()
         
         # Set up the metadata LLM
-        llm_config.metadata_llm.enabled = False  # Enable the metadata LLM
+        llm_config.metadata_llm.enabled = True  # Enable the metadata LLM
         llm_config.metadata_llm.model_name = os.getenv("METADATA_LLM_MODEL")
         llm_config.metadata_llm.provider = os.getenv("METADATA_LLM_PROVIDER")
         llm_config.metadata_llm.api_key_env_var = os.getenv("METADATA_LLM_API_KEY_ENV_VAR")
@@ -72,8 +72,8 @@ if __name__ == "__main__":
         llm_config.coding_llm.enabled = False
         
         # Configure selective enrichment
-        llm_config.enrich_documents = False  # Disable metadata enrichment for Docling documents (PDF, DOCX, etc.)
-        llm_config.enrich_code = True        # Enable metadata enrichment for code documents
+        llm_config.enrich_documents = True  # Enable metadata enrichment for Docling documents (PDF, DOCX, etc.)
+        llm_config.enrich_code = True       # Enable metadata enrichment for code documents
 
         config = UnifiedConfig(
             input_directory="./data", # Or "/path/to/your/data"
