@@ -125,9 +125,18 @@ class CodeProcessorConfig:
     chunk_lines: int = 60
     chunk_overlap_lines: int = 15
     max_chars: int = 2000
+    chunk_size: int = 512  # Token size for Chonkie chunker (in tokens)
+    
+    # Chunking strategy options
+    chunking_strategies: List[str] = field(default_factory=lambda: [
+        "chonkie_ast",  # AST-based chunking with Chonkie (highest priority)
+        "llamaindex_ast",  # AST-based chunking with LlamaIndex
+        "semantic_line",  # Semantic line-based chunking
+        "basic_line"  # Basic line-based chunking with overlap
+    ])
     
     # Language detection
-    language_detection: str = "python"  # Use a specific language like "python", "javascript", etc.
+    language_detection: str = "auto"  # Use "auto" to detect language or specify like "python", "javascript", etc.
     
     # Embedding parameters
     include_imports: bool = True
