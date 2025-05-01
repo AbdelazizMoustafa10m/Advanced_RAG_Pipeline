@@ -80,8 +80,6 @@ doc_reg_db/
 *.env
 
 .windsurf/
-.windsurf/task-logs/
-.windsurf/plans/
 
 memory-bank/
 

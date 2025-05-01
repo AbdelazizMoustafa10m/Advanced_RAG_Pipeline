@@ -15,6 +15,7 @@ The pipeline is designed for:
 ## Key Features
 
 - Enhanced document detection with multiple strategies (extension, content analysis, magic numbers)
+- Advanced code chunking with Chonkie AST-based parsing and multi-strategy fallback
 - Specialized document loaders for PDFs (DoclingReader), code files, markdown, and more
 - Document Registry for efficient caching and idempotent processing with accurate path tracking
 - Smart skipping of previously processed documents based on modification time
@@ -89,7 +90,8 @@ python main.py
   - Parallelism
   - LLM providers and enrichment options
   - Vector store backend
-  - Chunking and enrichment strategies
+  - Code chunking strategies (Chonkie AST, LlamaIndex AST, semantic line, basic line)
+  - Document chunking and enrichment strategies
   - Document Registry settings (database path, stalled processing timeout)
 
 ## Main Components
@@ -98,7 +100,7 @@ python main.py
 - **EnhancedDirectoryLoader**: Loads files and routes them to specialized loaders based on document type
 - **EnhancedDetectorService**: Identifies document types using multiple detection strategies with confidence scoring
 - **DoclingReader**: Specialized PDF/document loader and chunker
-- **CodeProcessor**: Splits and processes code files
+- **CodeProcessor**: Splits and processes code files with multi-strategy chunking (Chonkie AST, LlamaIndex AST, semantic line, basic line)
 - **TechnicalDocumentProcessor**: Handles technical docs (PDF, DOCX, etc.)
 - **MarkdownProcessor**: Processes markdown files with specialized chunking
 - **Metadata Generators**: Enrich nodes with metadata using LLMs

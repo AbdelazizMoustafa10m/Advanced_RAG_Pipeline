@@ -20,3 +20,7 @@ pytest-mock
 reportlab
 # python-magic is optional and can be installed if magic number detection is needed
 python-magic
+# Chonkie for enhanced code chunking capabilities
+chonkie[code]
+# Tokenizers for Chonkie
+tokenizers
