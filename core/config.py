@@ -69,19 +69,40 @@ class DetectorConfig:
     """Configuration for document type detection."""
     use_file_extension: bool = True
     use_content_analysis: bool = False
+    use_magic_numbers: bool = True
+    parallel_processing: bool = True
     
     # File extension mappings
     code_extensions: List[str] = field(default_factory=lambda: [
         ".py", ".js", ".ts", ".java", ".cpp", ".go", ".cs", ".rb", 
-        ".php", ".rs", ".swift", ".kt", ".c", ".h"
+        ".php", ".rs", ".swift", ".kt", ".c", ".h", ".hpp", ".scala"
     ])
     
     document_extensions: List[str] = field(default_factory=lambda: [
-        ".pdf", ".docx", ".md", ".html", ".txt", ".rtf", ".odt"
+        ".pdf", ".docx", ".md", ".html", ".txt", ".rtf", ".odt", ".csv",
+        ".json", ".xml", ".yaml", ".yml", ".pptx", ".ppt"
     ])
     
-    # Confidence thresholds for content-based detection
+    # Data file extensions
+    data_extensions: List[str] = field(default_factory=lambda: [
+        ".csv", ".json", ".xml", ".yaml", ".yml"
+    ])
+    
+    # Presentation file extensions
+    presentation_extensions: List[str] = field(default_factory=lambda: [
+        ".pptx", ".ppt", ".odp", ".key"
+    ])
+    
+    # Web file extensions
+    web_extensions: List[str] = field(default_factory=lambda: [
+        ".html", ".htm", ".css", ".js"
+    ])
+    
+    # Confidence thresholds for detection
     min_confidence: float = 0.7
+    high_confidence: float = 0.9
+    medium_confidence: float = 0.7
+    low_confidence: float = 0.4
 
 
 @dataclass

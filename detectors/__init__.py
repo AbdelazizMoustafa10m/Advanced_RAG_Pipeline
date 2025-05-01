@@ -3,5 +3,7 @@
 Document type detection components.
 """
 
-from .detector_service import DetectorService
-from .file_extension import FileExtensionDetector
+from .document_detector import DocumentDetector, DetectionResult
+from .enhanced_detector_service import EnhancedDetectorService
+from .detector_factory import DetectorFactory
+

@@ -79,9 +79,12 @@ doc_reg_db/
 # Ignore secrets
 *.env
 
-# Windsurf and memory bank
-memory-bank/
 .windsurf/
+.windsurf/task-logs/
+.windsurf/plans/
+
+memory-bank/
+
 .windsurfrules
 
 data/
