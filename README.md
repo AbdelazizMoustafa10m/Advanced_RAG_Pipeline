@@ -24,7 +24,7 @@ The pipeline is designed for:
 - Modular pipeline with clear separation of concerns between detectors, processors, and enrichers
 - Parallel processing support with optimized batch operations
 - Configurable via Python dataclasses and environment variables
-- Output includes enriched nodes for both LLM and embedding models
+- Output includes enriched nodes for both LLM and embedding models with guaranteed visibility of metadata enrichment
 
 ## Architecture
 
@@ -104,12 +104,14 @@ python main.py
 - **TechnicalDocumentProcessor**: Handles technical docs (PDF, DOCX, etc.)
 - **MarkdownProcessor**: Processes markdown files with specialized chunking
 - **Metadata Generators**: Enrich nodes with metadata using LLMs
+- **DoclingMetadataFormatter**: Formats complex document metadata with template-based approach to ensure enrichment visibility in both LLM and embedding contexts
 - **Vector Store**: Stores embeddings for semantic search (Chroma by default)
 
 ## Output
 
 - All processed and enriched nodes are saved to `node_contents.txt` (and variants)
-- Includes LLM and embedding model views for each node
+- Includes LLM and embedding model views for each node with complete enrichment information (summaries, titles, questions)
+- Consistent formatting of complex metadata through template-based consolidation
 - Registry statistics show document counts by type and status
 - Detailed listing of all tracked documents with their processing status
 
