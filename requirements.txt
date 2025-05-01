@@ -18,3 +18,5 @@ llama-index-vector-stores-chroma
 pytest
 pytest-mock
 reportlab
+# python-magic is optional and can be installed if magic number detection is needed
+python-magic

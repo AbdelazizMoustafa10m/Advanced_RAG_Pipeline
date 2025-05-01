@@ -4,4 +4,4 @@ Utility components.
 """
 
 from .logging import setup_logging
-from .parallel import parallel_process, batch_process
+from .parallel import parallel_process, batch_process, get_executor

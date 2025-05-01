@@ -13,7 +13,7 @@ from llama_index.core.node_parser import CodeSplitter
 
 from core.interfaces import IDocumentLoader
 from core.config import LoaderConfig, DocumentType, DetectorConfig, CodeProcessorConfig
-from detectors.detector_service import DetectorService
+from detectors.enhanced_detector_service import EnhancedDetectorService
 from loaders.code_loader import CodeLoader
 from loaders.directory_loader import UnifiedDirectoryLoader as DirectoryLoader
 from processors.code.code_processor import CodeProcessor
@@ -48,8 +48,8 @@ class EnhancedDirectoryLoader(IDocumentLoader):
         self.code_processor_config = code_processor_config or CodeProcessorConfig()
         self.llm = llm
         
-        # Create detector service
-        self.detector_service = DetectorService(self.detector_config)
+        # Create enhanced detector service
+        self.detector_service = EnhancedDetectorService(self.detector_config)
         
         # Initialize specialized loaders
         self.docling_reader = docling_reader

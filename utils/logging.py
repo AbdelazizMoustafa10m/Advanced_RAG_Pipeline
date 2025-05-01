@@ -5,7 +5,7 @@ import os
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
-from ..core.config import LoggingConfig
+from core.config import LoggingConfig
 
 
 def setup_logging(config: Optional[LoggingConfig] = None):

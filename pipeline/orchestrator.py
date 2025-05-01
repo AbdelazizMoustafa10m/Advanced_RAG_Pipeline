@@ -12,7 +12,7 @@ from registry.status import ProcessingStatus
 
 from core.config import UnifiedConfig, DocumentType
 from core.interfaces import IDocumentLoader, IDocumentProcessor # Adjust imports
-from detectors.detector_service import DetectorService
+from detectors.enhanced_detector_service import EnhancedDetectorService
 from loaders.enhanced_directory_loader import EnhancedDirectoryLoader # Use enhanced loader
 from llama_index.readers.docling import DoclingReader
 from docling.document_converter import DocumentConverter
@@ -53,8 +53,8 @@ class PipelineOrchestrator:
             llm=self.llm_provider
         )
         
-        # Initialize detector service
-        self.detector = DetectorService(config.detector)
+        # Initialize enhanced detector service
+        self.detector = EnhancedDetectorService(config.detector)
         
         # Initialize processors
         self.code_processor = CodeProcessor(
@@ -179,82 +179,123 @@ class PipelineOrchestrator:
         document_groups = defaultdict(list)
         unknown_doc_counter = 0
         
-        # Create a document tracker to associate document IDs with file types
-        # This helps us maintain correct grouping without hardcoding filenames
-        doc_type_tracker = {}
-        pdf_paths_by_id = {}
-        code_paths_by_id = {}
-        
-        # First, make an initial pass to identify document types
-        for idx, doc in enumerate(documents):
-            doc_id = doc.doc_id
-            file_type = doc.metadata.get("file_type", "").lower()
-            file_path = doc.metadata.get("file_path", "")
-            
-            # Determine document type
-            if file_type == "code" or (file_path and any(file_path.lower().endswith(ext) for ext in [".py", ".js", ".java", ".c", ".cpp"])):
-                doc_type_tracker[doc_id] = "code"
-                if file_path and os.path.exists(file_path):
-                    code_paths_by_id[doc_id] = file_path
-            else:
-                # Assume PDF/document if not code
-                doc_type_tracker[doc_id] = "document"
-        
-        # Now look at filesystem to match documents with actual files
-        pdf_files = []
-        code_files = []
-        
+        # Get all files in the input directory
+        all_files = []
         for root, _, files in os.walk(self.config.input_directory):
             for file in files:
                 full_path = os.path.join(root, file)
-                if file.lower().endswith(".pdf"):
-                    pdf_files.append(full_path)
-                elif file.lower().endswith((".py", ".js", ".java", ".c", ".cpp")):
-                    code_files.append(full_path)
+                if os.path.isfile(full_path) and not os.path.basename(full_path).startswith('.'):
+                    all_files.append(full_path)
         
-        logger.info(f"Found {len(pdf_files)} PDF files and {len(code_files)} code files in directory")
+        # Use the detector service to identify file types
+        file_type_results = self.detector.batch_detect_with_metadata(all_files)
+        
+        # Group files by type for easier lookup
+        files_by_type = defaultdict(list)
+        for file_path, result in file_type_results.items():
+            doc_type = result.document_type
+            files_by_type[doc_type].append(file_path)
+        
+        # Log file counts by type
+        type_counts = {doc_type.name: len(files) for doc_type, files in files_by_type.items()}
+        logger.info(f"Detected file types: {type_counts}")
+        
+        # Create a mapping from document ID to file path and type
+        doc_path_mapping = {}
+        doc_type_mapping = {}
+        
+        # First, check if documents already have file paths
+        for doc in documents:
+            doc_id = doc.doc_id
+            file_path = doc.metadata.get("file_path", "")
+            
+            if file_path and os.path.exists(file_path):
+                # Use existing file path if available
+                doc_path_mapping[doc_id] = file_path
+                
+                # Detect the type using our detector service
+                if file_path in file_type_results:
+                    doc_type = file_type_results[file_path].document_type
+                else:
+                    # If not in results, detect it now
+                    detection_result = self.detector.detect_with_metadata(file_path)
+                    doc_type = detection_result.document_type
+                
+                doc_type_mapping[doc_id] = doc_type
         
         # Now group documents with their source files
         for doc in documents:
             doc_id = doc.doc_id
-            doc_type = doc_type_tracker.get(doc_id, "unknown")
             
-            if doc_type == "code":
-                # For code documents: use existing path if available
-                if doc_id in code_paths_by_id:
-                    original_path = code_paths_by_id[doc_id]
-                    logger.info(f"Using existing code path for document {doc_id}: {original_path}")
-                else:
-                    # Try to match with available code files
-                    if code_files:
-                        original_path = code_files[0]  # Use the first code file as default
-                        # Try to find a better match by checking content
-                        doc_content = str(doc.text)[:200]
-                        for file_path in code_files:
-                            if os.path.basename(file_path) in doc_content:
-                                original_path = file_path
-                                break
-                    else:
-                        # No code files found, create a placeholder
-                        unknown_doc_counter += 1
-                        original_path = f"code_document_{unknown_doc_counter}.py"
+            # If we already mapped this document, use that information
+            if doc_id in doc_path_mapping:
+                original_path = doc_path_mapping[doc_id]
+                doc_type = doc_type_mapping[doc_id]
+                logger.info(f"Using existing path for document {doc_id}: {original_path}")
+            else:
+                # Try to match with detected files based on content
+                doc_content = str(doc.text)[:500].lower()
+                matched = False
                 
-                logger.info(f"Using code path for document {doc_id}: {original_path}")
-            else:  # document type
-                # For PDF documents
-                if pdf_files:
-                    # Use the first PDF file we found - we'll group all PDF documents this way
-                    original_path = pdf_files[0]
-                else:
-                    # Create a document ID based group instead if no PDF files found
-                    original_path = f"document_{doc_id}.pdf"
+                # Try to find a matching file by content
+                for doc_type, file_paths in files_by_type.items():
+                    for file_path in file_paths:
+                        file_name = os.path.basename(file_path).lower()
+                        if file_name in doc_content:
+                            original_path = file_path
+                            matched = True
+                            logger.info(f"Matched document {doc_id} to file {original_path} by content")
+                            break
+                    if matched:
+                        break
+                
+                # If no match by content, try to match by type
+                if not matched:
+                    # Get the document type from metadata if available
+                    metadata_type = doc.metadata.get("file_type", "").lower()
                     
-                logger.info(f"Using document path for document {doc_id}: {original_path}")
+                    # Map metadata type to DocumentType enum
+                    if metadata_type == "code":
+                        target_type = DocumentType.CODE
+                    elif metadata_type == "markdown":
+                        target_type = DocumentType.MARKDOWN
+                    elif metadata_type == "pdf" or metadata_type == "document":
+                        target_type = DocumentType.DOCUMENT
+                    else:
+                        # Try to detect from content
+                        if "```" in doc_content or "def " in doc_content or "class " in doc_content:
+                            target_type = DocumentType.CODE
+                        elif "#" in doc_content[:10] or "markdown" in doc_content:
+                            target_type = DocumentType.MARKDOWN
+                        else:
+                            target_type = DocumentType.DOCUMENT
+                    
+                    # Find a file of the matching type
+                    if target_type in files_by_type and files_by_type[target_type]:
+                        original_path = files_by_type[target_type][0]
+                        doc_type = target_type
+                        logger.info(f"Matched document {doc_id} to file {original_path} by type")
+                    else:
+                        # Create a placeholder path
+                        unknown_doc_counter += 1
+                        if target_type == DocumentType.CODE:
+                            original_path = f"code_document_{unknown_doc_counter}.py"
+                        elif target_type == DocumentType.MARKDOWN:
+                            original_path = f"markdown_document_{unknown_doc_counter}.md"
+                        else:
+                            original_path = f"document_{unknown_doc_counter}.txt"
+                        doc_type = target_type
+                        logger.info(f"Created placeholder path for document {doc_id}: {original_path}")
             
             # Set consistent metadata
-            doc.metadata["file_type"] = doc_type
+            doc.metadata["document_type"] = doc_type.name.lower()
             doc.metadata["file_path"] = original_path
             doc.metadata["original_file_path"] = original_path
+            
+            # Add file extension to metadata for better type identification
+            file_ext = os.path.splitext(original_path)[1].lower()
+            if file_ext:
+                doc.metadata["file_extension"] = file_ext
             
             # Add the document to its group
             document_groups[original_path].append(doc)
@@ -298,10 +339,9 @@ class PipelineOrchestrator:
                 documents_to_load = []
                 for abs_path in all_files:
                     # For registry, we need the path format './data/file.ext'
-                    # Extract just the base directory (data) and filename
-                    base_dir = os.path.basename(input_dir)
-                    rel_filename = os.path.basename(abs_path)
-                    reg_path = f"./{base_dir}/{rel_filename}"
+                    # Get the proper relative path from input_dir to the file
+                    rel_path = os.path.relpath(abs_path, os.path.dirname(input_dir))
+                    reg_path = f"./{rel_path}"
                     
                     try:
                         # Get file stats for a quick check

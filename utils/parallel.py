@@ -104,3 +104,18 @@ def batch_process(
                 logger.error(f"Error processing batch {batch_idx + 1}: {str(e)}")
     
     return all_results
+
+
+def get_executor(max_workers: Optional[int] = None):
+    """Get a thread pool executor with the specified number of workers.
+    
+    Args:
+        max_workers: Maximum number of worker threads
+        
+    Returns:
+        ThreadPoolExecutor instance
+    """
+    if max_workers is None:
+        max_workers = min(32, os.cpu_count() + 4)
+    
+    return concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
