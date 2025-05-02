@@ -9,7 +9,7 @@ import logging
 from multiprocessing import freeze_support
 
 # Use direct imports from the project root
-from core.config import UnifiedConfig, ParallelConfig, DocumentType, RegistryConfig
+from core.config import UnifiedConfig, ParallelConfig, DocumentType, RegistryConfig, EmbedderConfig
 from pipeline.orchestrator import PipelineOrchestrator
 from indexing.vector_store import ChromaVectorStoreAdapter
 from core.interfaces import IVectorStore
@@ -28,7 +28,7 @@ load_dotenv() # Load API keys from .env file
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO,  # Change to DEBUG for more detailed logs
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
@@ -62,10 +62,16 @@ if __name__ == "__main__":
         llm_config = LLMConfig()
         
         # Set up the metadata LLM
-        llm_config.metadata_llm.enabled = True  # Enable the metadata LLM
+        llm_config.metadata_llm.enabled = False  # Enable the metadata LLM
         llm_config.metadata_llm.model_name = os.getenv("METADATA_LLM_MODEL")
         llm_config.metadata_llm.provider = os.getenv("METADATA_LLM_PROVIDER")
         llm_config.metadata_llm.api_key_env_var = os.getenv("METADATA_LLM_API_KEY_ENV_VAR")
+        
+        # Debug LLM configuration
+        logger.debug(f"Metadata LLM Model: {llm_config.metadata_llm.model_name}")
+        logger.debug(f"Metadata LLM Provider: {llm_config.metadata_llm.provider}")
+        logger.debug(f"Metadata LLM API Key Env Var: {llm_config.metadata_llm.api_key_env_var}")
+        logger.debug(f"Actual API Key Value: {'[SET]' if os.getenv(llm_config.metadata_llm.api_key_env_var) else '[NOT SET]'}")
         
         # Disable the other LLMs
         llm_config.query_llm.enabled = False
@@ -74,6 +80,17 @@ if __name__ == "__main__":
         # Configure selective enrichment
         llm_config.enrich_documents = True  # Enable metadata enrichment for Docling documents (PDF, DOCX, etc.)
         llm_config.enrich_code = True       # Enable metadata enrichment for code documents
+        
+        # Create embedder configuration
+        embedder_config = EmbedderConfig(
+            provider=os.getenv("EMBEDDER_PROVIDER", "huggingface"),
+            model_name=os.getenv("EMBEDDER_MODEL", "BAAI/bge-small-en-v1.5"),
+            api_key_env_var=os.getenv("EMBEDDER_API_KEY_ENV_VAR"),
+            api_base=os.getenv("EMBEDDER_API_BASE"),
+            embed_batch_size=int(os.getenv("EMBEDDER_BATCH_SIZE", "10")),
+            use_cache=True,
+            cache_dir="./.cache/embeddings"
+        )
 
         config = UnifiedConfig(
             input_directory="./data", # Or "/path/to/your/data"
@@ -81,7 +98,8 @@ if __name__ == "__main__":
             parallel=ParallelConfig(max_workers=4), # Use max_workers from config
             registry=RegistryConfig(
                 db_path="./doc_reg_db/document_registry.db"
-            )
+            ),
+            embedder=embedder_config # Add the embedder configuration
         )
         logger.info("Configuration loaded successfully.")
         # You can print the config for verification: logger.debug(config)
@@ -92,13 +110,9 @@ if __name__ == "__main__":
         logger.error(f"Unexpected error loading config: {e}", exc_info=True)
         sys.exit(1)
 
-    # Optional: Configure LlamaIndex Settings globally if needed (e.g., embedding model)
-    # try:
-    #     Settings.embed_model = HuggingFaceEmbedding(model_name=config.vector_store.embedding_model)
-    #     logger.info(f"Set embedding model: {config.vector_store.embedding_model}")
-    # except Exception as e:
-    #     logger.error(f"Failed to set embedding model: {e}", exc_info=True)
-    #     # Decide if this is critical or can proceed without embeddings
+    # The embedder is now configured through the EmbedderConfig and initialized in the orchestrator
+    # No need to set global embedding model as it's handled by the embedder service
+    logger.info(f"Configured embedder with provider: {config.embedder.provider}, model: {config.embedder.model_name}")
 
     # 2. --- Pipeline Execution ---
     # Initialize and pass to orchestrator
@@ -118,9 +132,22 @@ if __name__ == "__main__":
     try:
         logger.info("Initializing Pipeline Orchestrator...")
         orchestrator = PipelineOrchestrator(config, document_registry)
+        
+        # Debug orchestrator components
+        logger.debug(f"Embedder initialized: {orchestrator.embedder is not None}")
+        logger.debug(f"LLM Provider initialized: {orchestrator.llm_provider is not None}")
+        if orchestrator.llm_provider:
+            logger.debug(f"LLM Provider type: {type(orchestrator.llm_provider).__name__}")
+            logger.debug(f"LLM Provider model: {getattr(orchestrator.llm_provider, 'model_name', 'Unknown')}")
+        
         logger.info("Running the processing pipeline...")
         # The orchestrator now handles loading, detecting, routing, processing, enriching
-        processed_nodes = orchestrator.run()
+        try:
+            processed_nodes = orchestrator.run()
+        except Exception as e:
+            logger.error(f"Error during pipeline execution: {e}", exc_info=True)
+            # Continue with empty nodes list to see what we can salvage
+            processed_nodes = []
         
         # Count nodes by type for better statistics
         code_nodes = [n for n in processed_nodes if n.metadata.get('node_type') == 'code']

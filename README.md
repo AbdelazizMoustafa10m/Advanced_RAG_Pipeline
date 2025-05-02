@@ -21,9 +21,11 @@ The pipeline is designed for:
 - Smart skipping of previously processed documents based on modification time
 - Document type classification with confidence scoring for accurate file type detection
 - Intelligent grouping of document parts for efficient processing and to avoid redundant LLM calls
-- Modular pipeline with clear separation of concerns between detectors, processors, and enrichers
+- Modular embedding system supporting multiple providers (HuggingFace, OpenAI, Cohere, Vertex, Bedrock, Ollama)
+- Modular pipeline with clear separation of concerns between detectors, processors, enrichers, and embedders
 - Parallel processing support with optimized batch operations
 - Configurable via Python dataclasses and environment variables
+- Batch embedding with disk-based caching for performance optimization
 - Output includes enriched nodes for both LLM and embedding models with guaranteed visibility of metadata enrichment
 
 ## Architecture
@@ -37,6 +39,7 @@ The pipeline is designed for:
    └─> [MarkdownProcessor] (for markdown)
    └─> [CSVProcessor] (for spreadsheets)
    └─> [Metadata Enrichers]
+→ [EmbedderService] (HuggingFace, OpenAI, Ollama, etc.)
 → [Vector Store] (Chroma, etc.)
 → [Query Engine]
 ```
@@ -48,6 +51,7 @@ The pipeline is designed for:
 - **loaders/**: Specialized loaders for directories, code, and documents.
 - **detectors/**: Enhanced document detection with multiple strategies and confidence scoring.
 - **llm/**: LLM provider integration, prompt templates, and caching.
+- **embedders/**: Embedding service with support for multiple providers and caching.
 - **indexing/**: Vector store adapters and query engine.
 - **registry/**: Document tracking and status management with accurate path handling.
 
@@ -90,6 +94,7 @@ python main.py
   - Parallelism
   - LLM providers and enrichment options
   - Vector store backend
+  - Embedding provider, model, batch size, and caching settings
   - Code chunking strategies (Chonkie AST, LlamaIndex AST, semantic line, basic line)
   - Document chunking and enrichment strategies
   - Document Registry settings (database path, stalled processing timeout)
@@ -105,6 +110,7 @@ python main.py
 - **MarkdownProcessor**: Processes markdown files with specialized chunking
 - **Metadata Generators**: Enrich nodes with metadata using LLMs
 - **DoclingMetadataFormatter**: Formats complex document metadata with template-based approach to ensure enrichment visibility in both LLM and embedding contexts
+- **EmbedderService**: Generates embeddings using configurable providers (HuggingFace, OpenAI, Ollama, etc.) with batch processing and caching
 - **Vector Store**: Stores embeddings for semantic search (Chroma by default)
 
 ## Output
@@ -119,6 +125,7 @@ python main.py
 
 - Add new document types by extending the EnhancedDetectorService with additional detection strategies
 - Add new processors, enrichers, or loaders by extending the respective modules
+- Add new embedding providers by extending the LlamaIndexEmbedderService
 - Integrate new LLMs or vector stores by updating config and adapters
 - Implement custom detection strategies by following the detector pattern
 

@@ -215,6 +215,38 @@ class LLMConfig:
 
 
 @dataclass
+class EmbedderConfig:
+    """Configuration for node embedding using LlamaIndex embedding models."""
+    # Embedding provider and model
+    provider: str = "huggingface"  # Options: huggingface, openai, cohere, vertex, bedrock, etc.
+    model_name: str = "BAAI/bge-small-en-v1.5"  # Default model
+    
+    # API configuration for hosted models
+    api_key_env_var: Optional[str] = None  # Environment variable name for API key
+    api_base: Optional[str] = None  # Base URL for API
+    
+    # Performance settings
+    embed_batch_size: int = 10  # Number of texts to embed in a single batch (uses LlamaIndex default if not specified)
+    
+    # Caching settings
+    use_cache: bool = True  # Cache embeddings to avoid recomputing
+    cache_dir: str = "./.cache/embeddings"  # Directory for embedding cache
+    
+    # Advanced settings for specific providers
+    additional_kwargs: Dict[str, Any] = field(default_factory=dict)  # Additional kwargs for specific providers
+    
+    # Fallback settings
+    fallback_provider: Optional[str] = None  # Fallback provider if primary fails
+    fallback_model: Optional[str] = None  # Fallback model if primary fails
+    
+    def __post_init__(self):
+        """Validate configuration after initialization."""
+        # Create cache directory if caching is enabled
+        if self.use_cache and self.cache_dir:
+            os.makedirs(self.cache_dir, exist_ok=True)
+
+
+@dataclass
 class VectorStoreConfig:
     """Configuration for vector storage."""
     engine: str = "chroma"  # "chroma", "qdrant", etc.
@@ -224,7 +256,7 @@ class VectorStoreConfig:
     collection_name: str = "unified_knowledge"
     
     # Indexing settings
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"  # Default, but can be overridden by EmbedderConfig
     distance_metric: str = "cosine"  # "cosine", "euclidean", "dot"
     
     # Persistence settings
@@ -268,6 +300,7 @@ class UnifiedConfig:
     code_processor: CodeProcessorConfig = field(default_factory=CodeProcessorConfig)
     docling: DoclingConfig = field(default_factory=DoclingConfig)
     llm: LLMConfig = field(default_factory=LLMConfig) # Uses the new LLMConfig
+    embedder: EmbedderConfig = field(default_factory=EmbedderConfig) # New embedder config
     vector_store: VectorStoreConfig = field(default_factory=VectorStoreConfig)
     query: QueryConfig = field(default_factory=QueryConfig)
     registry: RegistryConfig = field(default_factory=RegistryConfig)
