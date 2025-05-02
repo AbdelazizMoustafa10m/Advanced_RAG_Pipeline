@@ -249,20 +249,53 @@ class EmbedderConfig:
 @dataclass
 class VectorStoreConfig:
     """Configuration for vector storage."""
-    engine: str = "chroma"  # "chroma", "qdrant", etc.
-    
-    # Storage paths
-    vector_db_path: str = "./vector_db"
+    # General settings
+    engine: str = "chroma"  # Options: "chroma", "qdrant"
     collection_name: str = "unified_knowledge"
+    distance_metric: str = "cosine"  # Options: "cosine", "euclid", "dot"
     
-    # Indexing settings
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"  # Default, but can be overridden by EmbedderConfig
-    distance_metric: str = "cosine"  # "cosine", "euclidean", "dot"
+    # ChromaDB specific settings
+    vector_db_path: str = "./vector_db"  # Local path for ChromaDB
+    persist_directory: Optional[str] = None  # Optional alternative persist directory
     
-    # Persistence settings
-    persist_directory: Optional[str] = None
-
-
+    # Qdrant specific settings
+    qdrant_location: str = "local"  # Options: "local", "cloud"
+    qdrant_url: Optional[str] = None  # Required for cloud, format: "https://your-cluster-url.qdrant.io"
+    qdrant_api_key: Optional[str] = None  # Required for cloud
+    qdrant_local_path: str = "./qdrant_db"  # Path for local Qdrant storage
+    qdrant_grpc_port: int = 6334  # gRPC port for local Qdrant
+    qdrant_prefer_grpc: bool = False  # Whether to prefer gRPC over HTTP
+    
+    # Advanced Qdrant settings
+    qdrant_timeout: float = 10.0  # Timeout for Qdrant operations in seconds
+    qdrant_vector_size: Optional[int] = None  # Vector size, determined from first vector if None
+    qdrant_shard_number: Optional[int] = None  # Number of shards for Qdrant collection
+    qdrant_replication_factor: Optional[int] = None  # Replication factor for Qdrant collection
+    qdrant_write_consistency_factor: Optional[int] = None  # Write consistency factor
+    qdrant_on_disk_payload: bool = True  # Whether to store payload on disk
+    
+    def __post_init__(self):
+        """Validate configuration after initialization."""
+        # Validate engine
+        if self.engine not in ["chroma", "qdrant"]:
+            raise ValueError(f"Unsupported vector store engine: {self.engine}. Supported engines: chroma, qdrant")
+        
+        # Validate Qdrant configuration if selected
+        if self.engine == "qdrant":
+            if self.qdrant_location not in ["local", "cloud"]:
+                raise ValueError(f"Unsupported Qdrant location: {self.qdrant_location}. Supported locations: local, cloud")
+            
+            if self.qdrant_location == "cloud" and not self.qdrant_url:
+                raise ValueError("Qdrant cloud location requires qdrant_url to be set")
+            
+            if self.qdrant_location == "cloud" and not self.qdrant_api_key:
+                raise ValueError("Qdrant cloud location requires qdrant_api_key to be set")
+        
+        # Create directories
+        if self.engine == "chroma":
+            os.makedirs(self.vector_db_path, exist_ok=True)
+        elif self.engine == "qdrant" and self.qdrant_location == "local":
+            os.makedirs(self.qdrant_local_path, exist_ok=True)
 @dataclass
 class QueryConfig:
     """Configuration for query processing."""

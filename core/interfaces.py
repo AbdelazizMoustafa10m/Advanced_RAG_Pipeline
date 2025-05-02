@@ -155,7 +155,20 @@ class IMetadataEnricher(ABC):
 
 
 class IVectorStore(ABC):
-    """Interface for vector storage."""
+    """Interface for vector storage.
+    
+    This interface defines the core operations for vector storage in the Advanced RAG Pipeline.
+    It provides a clean abstraction over different vector database implementations.
+    """
+    
+    @abstractmethod
+    def get_storage_context(self) -> 'StorageContext':
+        """Get the storage context for this vector store.
+        
+        Returns:
+            StorageContext: The storage context for this vector store
+        """
+        pass
     
     @abstractmethod
     def create_index(self, nodes: List[TextNode]) -> VectorStoreIndex:
@@ -187,6 +200,18 @@ class IVectorStore(ABC):
             
         Returns:
             Loaded vector store index
+        """
+        pass
+    
+    @abstractmethod
+    def get_query_engine(self, **kwargs):
+        """Get a query engine for this index.
+        
+        Args:
+            **kwargs: Additional arguments for the query engine
+            
+        Returns:
+            Query engine for this index
         """
         pass
 

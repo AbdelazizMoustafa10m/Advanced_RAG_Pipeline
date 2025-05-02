@@ -6,6 +6,8 @@ docling
 llama-index-readers-docling
 llama-index-node-parser-docling
 llama-index-core>=0.10.13
+llama-index-vector-stores-qdrant
+llama-index-vector-stores-chroma
 
 # Embedding models
 llama-index-embeddings-huggingface
@@ -36,3 +38,4 @@ chonkie[code]
 # Tokenizers for Chonkie
 tokenizers
 load_dotenv
+qdrant-client

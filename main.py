@@ -62,7 +62,7 @@ if __name__ == "__main__":
         llm_config = LLMConfig()
         
         # Set up the metadata LLM
-        llm_config.metadata_llm.enabled = False  # Enable the metadata LLM
+        llm_config.metadata_llm.enabled = True  # Enable the metadata LLM
         llm_config.metadata_llm.model_name = os.getenv("METADATA_LLM_MODEL")
         llm_config.metadata_llm.provider = os.getenv("METADATA_LLM_PROVIDER")
         llm_config.metadata_llm.api_key_env_var = os.getenv("METADATA_LLM_API_KEY_ENV_VAR")
@@ -91,6 +91,24 @@ if __name__ == "__main__":
             use_cache=True,
             cache_dir="./.cache/embeddings"
         )
+        
+        # Create vector store configuration
+        from core.config import VectorStoreConfig
+        vector_store_config = VectorStoreConfig(
+            engine=os.getenv("VECTOR_STORE_ENGINE", "chroma"),
+            collection_name=os.getenv("VECTOR_STORE_COLLECTION", "unified_knowledge"),
+            distance_metric=os.getenv("VECTOR_STORE_DISTANCE_METRIC", "cosine"),
+            
+            # ChromaDB specific settings
+            vector_db_path=os.getenv("CHROMA_DB_PATH", "./vector_db"),
+            
+            # Qdrant specific settings
+            qdrant_location=os.getenv("QDRANT_LOCATION", "local"),
+            qdrant_url=os.getenv("QDRANT_URL"),
+            qdrant_api_key=os.getenv("QDRANT_API_KEY"),
+            qdrant_local_path=os.getenv("QDRANT_LOCAL_PATH", "./qdrant_db"),
+            qdrant_prefer_grpc=os.getenv("QDRANT_PREFER_GRPC", "False").lower() == "true"
+        )
 
         config = UnifiedConfig(
             input_directory="./data", # Or "/path/to/your/data"
@@ -99,7 +117,8 @@ if __name__ == "__main__":
             registry=RegistryConfig(
                 db_path="./doc_reg_db/document_registry.db"
             ),
-            embedder=embedder_config # Add the embedder configuration
+            embedder=embedder_config, # Add the embedder configuration
+            vector_store=vector_store_config # Add the vector store configuration
         )
         logger.info("Configuration loaded successfully.")
         # You can print the config for verification: logger.debug(config)

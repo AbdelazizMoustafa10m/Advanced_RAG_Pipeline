@@ -2,9 +2,18 @@
 
 ## 1. Overview
 
-This document outlines the architecture of the **Advanced RAG Pipeline**, a system designed for ingesting, processing, enriching, and indexing heterogeneous documents (primarily technical documents like PDFs and source code) to support Retrieval-Augmented Generation (RAG) applications.
+This document describes the architecture of the **Advanced RAG Pipeline**, a modular, extensible system for processing, enriching, embedding, and indexing diverse documents (code, technical docs, PDFs, etc.) for Retrieval-Augmented Generation (RAG) and semantic search.
 
-The core goal is to create high-quality, context-aware text nodes suitable for semantic search via vector embeddings and for providing relevant context to Large Language Models (LLMs) during query time. Key features include robust document type detection, specialized chunking strategies for different content types (Docling for documents, AST-based for code), optional LLM-based metadata enrichment, persistent document processing status tracking via a registry, and flexible configuration.
+The pipeline features:
+- Robust document type detection with multi-strategy confidence scoring
+- Specialized chunking for code (AST, semantic, fallback) and documents (Docling)
+- Optional LLM-based enrichment
+- Modular embedding with support for multiple providers, batch processing, and disk caching
+- Pluggable vector store system with multi-provider support, fallback, and in-memory option
+- Persistent registry for idempotent processing
+- Configuration via Python dataclasses and environment variables
+
+All components are designed for extensibility, reliability, and graceful degradation when dependencies are missing.
 
 ## 2. Key Features
 
@@ -23,6 +32,8 @@ The core goal is to create high-quality, context-aware text nodes suitable for s
 *   **Node Output Control:** Uses LlamaIndex's `excluded_llm_metadata_keys` and `excluded_embed_metadata_keys`, managed by the `DoclingMetadataFormatter`, to control the final text representation for different use cases. It also adds a consolidated `formatted_metadata` field via the formatter's `_apply_template` method.
 
 ## 3. Architecture Diagram
+
+### High-Level Pipeline
 
 ```mermaid
 graph TD
@@ -55,6 +66,12 @@ graph TD
         I5 --> J;
         F -- Return Nodes --> K[2. DoclingMetadataFormatter];
         K -- Format Metadata --> L[Add formatted_ Keys];
+        L --> M[Set Exclusion Keys];
+        M -- Final Nodes --> O1[EmbedderService];
+        O1 -- Batch Embed --> O2[VectorStoreAdapter];
+        O2 -- Store --> P[Vector Store Index];
+        O2 -- Save --> Q[Saved node_contents.txt];
+    end
         L -- Apply Template --> M[Add formatted_metadata Key];
         M -- Set Exclusions --> N[Final Nodes];
         E -- Return Final Nodes --> O1[Embedding];
@@ -71,6 +88,7 @@ graph TD
         S[EnhancedDetectorService]
         T[LLMProvider]
         U[EmbedderService]
+        V[VectorStoreFactory]
     end
 
     O2 --> P;
@@ -81,6 +99,7 @@ graph TD
     H4 --> T; # Enrichers use LLM
     I4 --> T; # Enrichers use LLM
     O1 --> U; # Embedding uses EmbedderService
+    O2 --> V; # VectorStore uses VectorStoreFactory
 
     style Z fill:#f9f,stroke:#333,stroke-width:2px
 ```
@@ -192,15 +211,23 @@ graph TD
         *   Calls `self._apply_template(node)` to add the `formatted_metadata` key.
         *   **Sets the final `excluded_llm_metadata_keys` and `excluded_embed_metadata_keys`** based on its configuration (`config.include_in_llm`, `config.include_in_embed`), ensuring raw keys are out and desired formatted/enriched keys are in.
 
-5.  **Embedding (`PipelineOrchestrator.run`):**
-    *   The formatted nodes are passed to the embedder service for vector embedding generation.
-    *   The embedder service uses the configured provider (HuggingFace, OpenAI, Ollama, etc.) to generate embeddings.
-    *   Batch processing and caching are used for performance optimization.
-    *   Embedding performance metrics (nodes/second) are logged.
+5.  **Embedding (EmbedderService):**
+    *   The formatted nodes are passed to the modular embedder service for vector embedding generation.
+    *   The embedder service is instantiated via a factory, supporting multiple providers (HuggingFace, OpenAI, Cohere, Vertex, Bedrock, Ollama, etc.).
+    *   Batch embedding and disk-based caching are used for performance and efficiency.
+    *   Provider fallback logic ensures robust operation if the primary provider fails.
+    *   Embedding performance metrics (nodes/second) and errors are logged.
 
-6.  **Return & Save (`PipelineOrchestrator.run` -> `main.py`):**
-    *   The final list of nodes (formatted, enriched, embedded, with correct exclusion keys) is returned.
-    *   `main.py` saves different views (`ALL`, `LLM`, `EMBED`) using `node.get_content(metadata_mode=...)`. The output for `LLM` and `EMBED` is controlled by the exclusion keys set in the final formatting step.
+6.  **Vector Storage (VectorStoreAdapter):**
+    *   Embedded nodes are passed to the vector store adapter, created via a factory based on configuration.
+    *   Supports ChromaDB, Qdrant (local/cloud), and SimpleVectorStore (in-memory, dependency-free fallback).
+    *   Multi-level fallback chain: tries user-selected engine, then alternatives, finally in-memory fallback.
+    *   Consistent node preparation, metadata filtering, and relationship sanitization across all stores.
+    *   Detailed timing/logging for all operations.
+
+7.  **Return & Save:**
+    *   The final list of nodes is returned and saved by `main.py`.
+    *   Output views (`ALL`, `LLM`, `EMBED`) are controlled by exclusion keys set in the final formatting step.
 
 ## 6. Metadata Handling Summary
 
@@ -213,24 +240,19 @@ graph TD
 
 ## 7. Configuration
 
-Configuration is primarily managed through dataclasses in `core/config.py`. Key aspects include:
+Configuration is managed via dataclasses in `core/config.py` and `.env` variables. Key config classes:
 
-*   Input/Output paths (`UnifiedConfig`).
-*   LLM models, providers, API keys, and role-specific settings (`LLMConfig`, `LLMSettings`).
-*   Flags to enable/disable document and code enrichment (`LLMConfig.enrich_documents`, `LLMConfig.enrich_code`).
-*   Document detection settings (`DetectorConfig`).
-*   Chunking parameters for code and documents (`CodeProcessorConfig`, `DoclingConfig`).
-*   Embedding models, providers, and settings (`EmbedderConfig`).
-*   Vector store settings (`VectorStoreConfig`).
-*   Document registry settings (`RegistryConfig`).
-*   Metadata formatting/inclusion (`FormattingConfig` within `DoclingMetadataFormatter`).
+- **EmbedderConfig**: Provider, model, batch size, cache path, advanced kwargs. Supports HuggingFace, OpenAI, Cohere, Vertex, Bedrock, Ollama, etc. Caching and batch size are configurable.
+- **VectorStoreConfig**: Engine (chroma/qdrant/simple), Qdrant location (local/cloud), URLs, API keys, advanced options. Multi-level fallback is automatic.
+- **UnifiedConfig**: Top-level config including all pipeline, embedder, and vector store options.
 
-Environment variables (via `.env`) are used for sensitive information like API keys.
+All options are documented in `.env_example`.
 
 ## 8. Extensibility
 
-*   **New Document Types:** Add detection logic to `EnhancedDetectorService`, create a new `IDocumentProcessor`, and update the `DocumentTypeRouter` or `EnhancedDirectoryLoader`.
-*   **New Chunking Strategy:** Implement `IDocumentChunker` or add logic to existing splitters.
-*   **New Enricher:** Implement `IMetadataEnricher` and integrate it into the relevant processor.
-*   **New Embedding Provider:** Add provider initialization logic to `LlamaIndexEmbedderService` and update `EmbedderConfig`.
-*   **New LLM/Vector Store:** Add provider logic to `llm/providers.py` or create a new `IVectorStore` adapter in `indexing/`. Update configuration options.
+- **New Embedding Providers**: Add a new provider class to `embedders/`, update the factory, and add config options.
+- **New Vector Stores**: Add a new adapter to `indexing/`, update the factory, and add config options.
+- **Fallbacks**: All new providers should implement error/fallback logic for robust operation.
+- **Testing**: In-memory vector store and mock embedders make testing easy without external dependencies.
+
+Other extension points (detectors, chunkers, enrichers) follow the same modular, interface-driven pattern.
