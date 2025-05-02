@@ -6,7 +6,18 @@ docling
 llama-index-readers-docling
 llama-index-node-parser-docling
 llama-index-core>=0.10.13
+
+# Embedding models
 llama-index-embeddings-huggingface
+sentence-transformers>=2.2.0
+
+# Embedding providers
+llama-index-embeddings-openai
+llama-index-embeddings-cohere
+llama-index-embeddings-vertex
+llama-index-embeddings-bedrock
+llama-index-embeddings-ollama  # For Ollama embedding models like nomic-embed-text
+
 tree-sitter-languages
 tree_sitter_language_pack
 llama-index-llms-openai
@@ -24,3 +35,4 @@ python-magic
 chonkie[code]
 # Tokenizers for Chonkie
 tokenizers
+load_dotenv

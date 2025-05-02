@@ -15,9 +15,10 @@ The core goal is to create high-quality, context-aware text nodes suitable for s
     *   **Code:** Employs `EnhancedCodeSplitter` with multi-strategy fallback (prioritizing Chonkie AST, LlamaIndex AST, semantic, basic lines).
 *   **Metadata Formatting:** Standardizes and formats raw metadata (e.g., from Docling) into clean, readable keys using `DoclingMetadataFormatter`.
 *   **Conditional LLM Enrichment:** Generates titles, summaries, and potentially Q&A pairs for nodes using configured LLMs (`DoclingMetadataGenerator`, `CodeMetadataGenerator`), controlled by flags (`enrich_documents`, `enrich_code`). Enrichment prompts are designed to utilize available context.
+*   **Modular Embedding:** Generates vector embeddings for nodes using configurable embedding providers (HuggingFace, OpenAI, Ollama, etc.) via `LlamaIndexEmbedderService`, with batch processing and caching for performance.
 *   **Document Registry:** Uses SQLite (`DocumentRegistry`) to track file hashes, processing status (Pending, Processing, Completed, Failed), and modification times, preventing redundant processing and enabling efficient pipeline runs.
 *   **Configurable Pipeline:** Utilizes Python dataclasses (`core/config.py`) for detailed configuration of all stages.
-*   **Modular Components:** Follows interface-based design (`core/interfaces.py`) for loaders, detectors, processors, enrichers, etc.
+*   **Modular Components:** Follows interface-based design (`core/interfaces.py`) for loaders, detectors, processors, enrichers, embedders, etc.
 *   **LLM Abstraction:** Supports different LLM providers via `llm/providers.py`.
 *   **Node Output Control:** Uses LlamaIndex's `excluded_llm_metadata_keys` and `excluded_embed_metadata_keys`, managed by the `DoclingMetadataFormatter`, to control the final text representation for different use cases. It also adds a consolidated `formatted_metadata` field via the formatter's `_apply_template` method.
 
@@ -56,7 +57,8 @@ graph TD
         K -- Format Metadata --> L[Add formatted_ Keys];
         L -- Apply Template --> M[Add formatted_metadata Key];
         M -- Set Exclusions --> N[Final Nodes];
-        E -- Return Final Nodes --> O[Store Nodes];
+        E -- Return Final Nodes --> O1[Embedding];
+        O1 --> O2[Store Nodes];
     end
 
     subgraph Output
@@ -68,15 +70,17 @@ graph TD
         R[DocumentRegistry]
         S[EnhancedDetectorService]
         T[LLMProvider]
+        U[EmbedderService]
     end
 
-    O --> P;
-    O --> Q;
+    O2 --> P;
+    O2 --> Q;
     C --> R;
     B --> R; # Loader might interact later for checks
     F --> S; # Router uses Detector
     H4 --> T; # Enrichers use LLM
     I4 --> T; # Enrichers use LLM
+    O1 --> U; # Embedding uses EmbedderService
 
     style Z fill:#f9f,stroke:#333,stroke-width:2px
 ```
@@ -106,11 +110,15 @@ graph TD
     *   **Role:** Identifies document types using various strategies.
     *   **Key Files:** `enhanced_detector_service.py`, `document_detector.py`, `detector_factory.py`
 
-5.  **`loaders/`**:
+5.  **`embedders/`**:
+    *   **Role:** Generates vector embeddings for nodes using various providers.
+    *   **Key Files:** `llamaindex_embedder_service.py`, `embedder_factory.py`
+
+6.  **`loaders/`**:
     *   **Role:** Reads documents from sources into LlamaIndex `Document` objects. Routes based on detected type.
     *   **Key Files:** `enhanced_directory_loader.py`, `directory_loader.py`, `code_loader.py`
 
-6.  **`processors/`**:
+7.  **`processors/`**:
     *   **Role:** Handles chunking, metadata formatting, and metadata enrichment for specific document types.
     *   **Key Files:**
         *   `document_router.py`: Routes documents to processors based on type.
@@ -125,11 +133,11 @@ graph TD
             *   `metadata_generator.py` (`CodeMetadataGenerator`): LLM enrichment for code.
             *   `language_detector.py`: Detects code language.
 
-7.  **`llm/`**:
+8.  **`llm/`**:
     *   **Role:** Handles interaction with LLMs, including provider abstraction, prompt management, and optional caching.
     *   **Key Files:** `providers.py`, `prompts.py`, `cache.py`
 
-8.  **`indexing/`**:
+9.  **`indexing/`**:
     *   **Role:** (Assumed based on RAG context) Handles embedding generation and vector store interaction (e.g., ChromaDB).
     *   **Key Files:** `vector_store.py` (Example Adapter)
 
@@ -184,8 +192,14 @@ graph TD
         *   Calls `self._apply_template(node)` to add the `formatted_metadata` key.
         *   **Sets the final `excluded_llm_metadata_keys` and `excluded_embed_metadata_keys`** based on its configuration (`config.include_in_llm`, `config.include_in_embed`), ensuring raw keys are out and desired formatted/enriched keys are in.
 
-5.  **Return & Save (`PipelineOrchestrator.run` -> `main.py`):**
-    *   The final list of nodes (formatted, potentially enriched, with correct exclusion keys) is returned.
+5.  **Embedding (`PipelineOrchestrator.run`):**
+    *   The formatted nodes are passed to the embedder service for vector embedding generation.
+    *   The embedder service uses the configured provider (HuggingFace, OpenAI, Ollama, etc.) to generate embeddings.
+    *   Batch processing and caching are used for performance optimization.
+    *   Embedding performance metrics (nodes/second) are logged.
+
+6.  **Return & Save (`PipelineOrchestrator.run` -> `main.py`):**
+    *   The final list of nodes (formatted, enriched, embedded, with correct exclusion keys) is returned.
     *   `main.py` saves different views (`ALL`, `LLM`, `EMBED`) using `node.get_content(metadata_mode=...)`. The output for `LLM` and `EMBED` is controlled by the exclusion keys set in the final formatting step.
 
 ## 6. Metadata Handling Summary
@@ -206,6 +220,7 @@ Configuration is primarily managed through dataclasses in `core/config.py`. Key 
 *   Flags to enable/disable document and code enrichment (`LLMConfig.enrich_documents`, `LLMConfig.enrich_code`).
 *   Document detection settings (`DetectorConfig`).
 *   Chunking parameters for code and documents (`CodeProcessorConfig`, `DoclingConfig`).
+*   Embedding models, providers, and settings (`EmbedderConfig`).
 *   Vector store settings (`VectorStoreConfig`).
 *   Document registry settings (`RegistryConfig`).
 *   Metadata formatting/inclusion (`FormattingConfig` within `DoclingMetadataFormatter`).
@@ -217,4 +232,5 @@ Environment variables (via `.env`) are used for sensitive information like API k
 *   **New Document Types:** Add detection logic to `EnhancedDetectorService`, create a new `IDocumentProcessor`, and update the `DocumentTypeRouter` or `EnhancedDirectoryLoader`.
 *   **New Chunking Strategy:** Implement `IDocumentChunker` or add logic to existing splitters.
 *   **New Enricher:** Implement `IMetadataEnricher` and integrate it into the relevant processor.
+*   **New Embedding Provider:** Add provider initialization logic to `LlamaIndexEmbedderService` and update `EmbedderConfig`.
 *   **New LLM/Vector Store:** Add provider logic to `llm/providers.py` or create a new `IVectorStore` adapter in `indexing/`. Update configuration options.

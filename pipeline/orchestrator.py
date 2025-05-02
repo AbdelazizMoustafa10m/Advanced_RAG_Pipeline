@@ -87,6 +87,18 @@ class PipelineOrchestrator:
         # Initialize DoclingNodeParser for document files
         self.docling_parser = DoclingNodeParser()
         logger.info("Initialized DoclingNodeParser")
+        
+        # Initialize embedder service
+        try:
+            from embedders.embedder_factory import EmbedderFactory
+            self.embedder = EmbedderFactory.create_embedder(config.embedder)
+            logger.info(f"Initialized Embedder Service with provider: {config.embedder.provider}, model: {config.embedder.model_name}")
+        except ImportError as e:
+            logger.warning(f"Embedder module not available: {str(e)}")
+            self.embedder = None
+        except Exception as e:
+            logger.error(f"Error initializing embedder: {str(e)}")
+            self.embedder = None
 
         # Get the enrichers from the respective processors
         document_metadata_enricher = getattr(self.document_processor, 'enricher', None)
@@ -619,6 +631,34 @@ class PipelineOrchestrator:
         # final_nodes = enricher.enrich(all_processed_nodes)
         
         final_nodes = all_processed_nodes  # Assuming no separate standardizer for now
+        
+        # 4. Embed nodes if embedder is available
+        if self.embedder and final_nodes:
+            try:
+                logger.info(f"Embedding {len(final_nodes)} nodes with {self.config.embedder.provider} provider")
+                embed_start_time = time.time()
+                
+                # Embed the nodes
+                embedded_nodes = self.embedder.embed_nodes(final_nodes)
+                
+                embed_end_time = time.time()
+                embed_time = embed_end_time - embed_start_time
+                embed_nodes_per_second = len(embedded_nodes) / embed_time if embed_time > 0 else 0
+                
+                logger.info(f"Embedding completed in {embed_time:.2f} seconds")
+                logger.info(f"Embedding efficiency: {embed_nodes_per_second:.2f} nodes/second")
+                
+                # Count nodes with embeddings
+                nodes_with_embeddings = sum(1 for node in embedded_nodes if node.embedding is not None and len(node.embedding) > 0)
+                logger.info(f"Nodes with embeddings: {nodes_with_embeddings}/{len(embedded_nodes)}")
+                
+                final_nodes = embedded_nodes
+            except Exception as e:
+                logger.error(f"Error embedding nodes: {str(e)}")
+                # Continue with unembedded nodes
+        elif not self.embedder:
+            logger.warning("Embedder not available. Nodes will not be embedded.")
+        
         self.processed_nodes = final_nodes  # Store final result for recovery
         
         end_time = time.time()

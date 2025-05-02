@@ -79,6 +79,8 @@ doc_reg_db/
 # Ignore secrets
 *.env
 
+.chroma_example/
+
 .windsurf/
 
 memory-bank/

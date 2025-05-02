@@ -240,3 +240,40 @@ class ILLMProvider(ABC):
             LLM instance
         """
         pass
+
+
+class IEmbedder(ABC):
+    """Interface for node embedding."""
+    
+    @abstractmethod
+    def embed_nodes(self, nodes: List[TextNode]) -> List[TextNode]:
+        """Embed a list of nodes with the configured embedding model.
+        
+        Args:
+            nodes: The nodes to embed
+            
+        Returns:
+            List of nodes with embeddings
+        """
+        pass
+    
+    @abstractmethod
+    def embed_query(self, query: str) -> List[float]:
+        """Embed a query string.
+        
+        Args:
+            query: The query to embed
+            
+        Returns:
+            Embedding vector
+        """
+        pass
+    
+    @abstractmethod
+    def get_embedding_model(self):
+        """Get the underlying LlamaIndex embedding model.
+        
+        Returns:
+            The LlamaIndex embedding model instance
+        """
+        pass
