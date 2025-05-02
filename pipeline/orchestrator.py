@@ -91,14 +91,21 @@ class PipelineOrchestrator:
         # Initialize embedder service
         try:
             from embedders.embedder_factory import EmbedderFactory
+            from indexing.vector_store import VectorStoreFactory
             self.embedder = EmbedderFactory.create_embedder(config.embedder)
             logger.info(f"Initialized Embedder Service with provider: {config.embedder.provider}, model: {config.embedder.model_name}")
+            
+            # Initialize vector store
+            self.vector_store = VectorStoreFactory.create_vector_store(config.vector_store)
+            logger.info(f"Initialized Vector Store with engine: {config.vector_store.engine}")
         except ImportError as e:
-            logger.warning(f"Embedder module not available: {str(e)}")
+            logger.warning(f"Embedder or Vector Store modules not available: {str(e)}")
             self.embedder = None
+            self.vector_store = None
         except Exception as e:
-            logger.error(f"Error initializing embedder: {str(e)}")
+            logger.error(f"Error initializing embedder or vector store: {str(e)}")
             self.embedder = None
+            self.vector_store = None
 
         # Get the enrichers from the respective processors
         document_metadata_enricher = getattr(self.document_processor, 'enricher', None)
@@ -653,11 +660,39 @@ class PipelineOrchestrator:
                 logger.info(f"Nodes with embeddings: {nodes_with_embeddings}/{len(embedded_nodes)}")
                 
                 final_nodes = embedded_nodes
+                
+                # 5. Index nodes in vector store if available
+                if self.vector_store and nodes_with_embeddings > 0:
+                    try:
+                        index_start_time = time.time()
+                        logger.info(f"Indexing {nodes_with_embeddings} nodes in vector store with engine: {self.config.vector_store.engine}")
+                        
+                        # Create index from nodes
+                        index = self.vector_store.create_index(final_nodes)
+                        
+                        # Persist the index
+                        self.vector_store.persist()
+                        
+                        index_end_time = time.time()
+                        index_time = index_end_time - index_start_time
+                        index_nodes_per_second = nodes_with_embeddings / index_time if index_time > 0 else 0
+                        
+                        logger.info(f"Indexing completed in {index_time:.2f} seconds")
+                        logger.info(f"Indexing efficiency: {index_nodes_per_second:.2f} nodes/second")
+                    except Exception as e:
+                        logger.error(f"Error indexing nodes in vector store: {str(e)}")
+                        # Continue without indexing
+                elif self.vector_store and nodes_with_embeddings == 0:
+                    logger.warning("No nodes with embeddings to index in vector store")
+                elif not self.vector_store:
+                    logger.warning("Vector store not available. Nodes will not be indexed.")
             except Exception as e:
                 logger.error(f"Error embedding nodes: {str(e)}")
                 # Continue with unembedded nodes
         elif not self.embedder:
             logger.warning("Embedder not available. Nodes will not be embedded.")
+            # Cannot index without embeddings
+            logger.warning("Vector store indexing skipped due to missing embeddings.")
         
         self.processed_nodes = final_nodes  # Store final result for recovery
         
