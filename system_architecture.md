@@ -2,18 +2,9 @@
 
 ## 1. Overview
 
-This document describes the architecture of the **Advanced RAG Pipeline**, a modular, extensible system for processing, enriching, embedding, and indexing diverse documents (code, technical docs, PDFs, etc.) for Retrieval-Augmented Generation (RAG) and semantic search.
+This document outlines the architecture of the **Advanced RAG Pipeline**, a system designed for ingesting, processing, enriching, and indexing heterogeneous documents (primarily technical documents like PDFs and source code) to support Retrieval-Augmented Generation (RAG) applications.
 
-The pipeline features:
-- Robust document type detection with multi-strategy confidence scoring
-- Specialized chunking for code (AST, semantic, fallback) and documents (Docling)
-- Optional LLM-based enrichment
-- Modular embedding with support for multiple providers, batch processing, and disk caching
-- Pluggable vector store system with multi-provider support, fallback, and in-memory option
-- Persistent registry for idempotent processing
-- Configuration via Python dataclasses and environment variables
-
-All components are designed for extensibility, reliability, and graceful degradation when dependencies are missing.
+The core goal is to create high-quality, context-aware text nodes suitable for semantic search via vector embeddings and for providing relevant context to Large Language Models (LLMs) during query time. Key features include robust document type detection, specialized chunking strategies for different content types (Docling for documents, AST-based for code), optional LLM-based metadata enrichment, persistent document processing status tracking via a registry, and flexible configuration.
 
 ## 2. Key Features
 
@@ -240,13 +231,19 @@ graph TD
 
 ## 7. Configuration
 
-Configuration is managed via dataclasses in `core/config.py` and `.env` variables. Key config classes:
+Configuration is primarily managed through dataclasses in `core/config.py`. Key aspects include:
 
-- **EmbedderConfig**: Provider, model, batch size, cache path, advanced kwargs. Supports HuggingFace, OpenAI, Cohere, Vertex, Bedrock, Ollama, etc. Caching and batch size are configurable.
-- **VectorStoreConfig**: Engine (chroma/qdrant/simple), Qdrant location (local/cloud), URLs, API keys, advanced options. Multi-level fallback is automatic.
-- **UnifiedConfig**: Top-level config including all pipeline, embedder, and vector store options.
+*   Input/Output paths (`UnifiedConfig`).
+*   LLM models, providers, API keys, and role-specific settings (`LLMConfig`, `LLMSettings`).
+*   Flags to enable/disable document and code enrichment (`LLMConfig.enrich_documents`, `LLMConfig.enrich_code`).
+*   Document detection settings (`DetectorConfig`).
+*   Chunking parameters for code and documents (`CodeProcessorConfig`, `DoclingConfig`).
+*   Embedding models, providers, and settings (`EmbedderConfig`).
+*   Vector store settings (`VectorStoreConfig`).
+*   Document registry settings (`RegistryConfig`).
+*   Metadata formatting/inclusion (`FormattingConfig` within `DoclingMetadataFormatter`).
 
-All options are documented in `.env_example`.
+Environment variables (via `.env`) are used for sensitive information like API keys.
 
 ## 8. Extensibility
 
