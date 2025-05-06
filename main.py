@@ -162,11 +162,17 @@ if __name__ == "__main__":
         logger.info("Running the processing pipeline...")
         # The orchestrator now handles loading, detecting, routing, processing, enriching
         try:
-            processed_nodes = orchestrator.run()
+            # The orchestrator.run() now returns a tuple of (nodes, index, vector_store)
+            run_result = orchestrator.run()
+            processed_nodes, index, vector_store = run_result
+            
+            logger.info(f"Pipeline returned {len(processed_nodes)} nodes, index: {index is not None}, vector_store: {vector_store is not None}")
         except Exception as e:
             logger.error(f"Error during pipeline execution: {e}", exc_info=True)
             # Continue with empty nodes list to see what we can salvage
             processed_nodes = []
+            index = None
+            vector_store = None
         
         # Count nodes by type for better statistics
         code_nodes = [n for n in processed_nodes if n.metadata.get('node_type') == 'code']

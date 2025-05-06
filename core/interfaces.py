@@ -1,7 +1,7 @@
 # --- core/interfaces.py ---
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional, Tuple, Sequence
+from typing import List, Dict, Any, Optional, Tuple, Sequence, Union
 from pathlib import Path
 from enum import Enum
 
@@ -10,6 +10,8 @@ from llama_index.core import Document
 from llama_index.core.schema import TextNode, BaseNode
 from llama_index.core import VectorStoreIndex
 from llama_index.core.llms import LLM
+from llama_index.core.schema import NodeWithScore, QueryBundle
+from llama_index.core.base.response.schema import Response
 
 from .config import DocumentType
 
@@ -300,5 +302,176 @@ class IEmbedder(ABC):
         
         Returns:
             The LlamaIndex embedding model instance
+        """
+        pass
+
+class IQueryTransformer(ABC):
+    """Interface for query transformation components."""
+    
+    @abstractmethod
+    def transform(self, query: str, **kwargs) -> Union[str, Dict[str, Any]]:
+        """Transform a query string.
+        
+        Args:
+            query: The original query string
+            **kwargs: Additional arguments for the transformer
+            
+        Returns:
+            Transformed query or transformation results dictionary
+        """
+        pass
+    
+    @abstractmethod
+    async def atransform(self, query: str, **kwargs) -> Union[str, Dict[str, Any]]:
+        """Asynchronously transform a query string.
+        
+        Args:
+            query: The original query string
+            **kwargs: Additional arguments for the transformer
+            
+        Returns:
+            Transformed query or transformation results dictionary
+        """
+        pass
+
+
+class IRetriever(ABC):
+    """Interface for enhanced retrieval components."""
+    
+    @abstractmethod
+    def retrieve(self, query_bundle_or_str: Union[QueryBundle, str], **kwargs) -> List[NodeWithScore]:
+        """Retrieve relevant nodes for a query.
+        
+        Args:
+            query_bundle_or_str: The query string or QueryBundle
+            **kwargs: Additional arguments for retrieval
+            
+        Returns:
+            List of nodes with relevance scores
+        """
+        pass
+    
+    @abstractmethod
+    async def aretrieve(self, query_bundle_or_str: Union[QueryBundle, str], **kwargs) -> List[NodeWithScore]:
+        """Asynchronously retrieve relevant nodes for a query.
+        
+        Args:
+            query_bundle_or_str: The query string or QueryBundle
+            **kwargs: Additional arguments for retrieval
+            
+        Returns:
+            List of nodes with relevance scores
+        """
+        pass
+
+
+class IReranker(ABC):
+    """Interface for reranking components."""
+    
+    @abstractmethod
+    def rerank(self, query_bundle_or_str: Union[QueryBundle, str], nodes: List[NodeWithScore], **kwargs) -> List[NodeWithScore]:
+        """Rerank a list of retrieved nodes.
+        
+        Args:
+            query_bundle_or_str: The query string or QueryBundle
+            nodes: List of nodes with relevance scores
+            **kwargs: Additional arguments for reranking
+            
+        Returns:
+            Reranked list of nodes with updated scores
+        """
+        pass
+    
+    @abstractmethod
+    async def arerank(self, query_bundle_or_str: Union[QueryBundle, str], nodes: List[NodeWithScore], **kwargs) -> List[NodeWithScore]:
+        """Asynchronously rerank a list of retrieved nodes.
+        
+        Args:
+            query_bundle_or_str: The query string or QueryBundle
+            nodes: List of nodes with relevance scores
+            **kwargs: Additional arguments for reranking
+            
+        Returns:
+            Reranked list of nodes with updated scores
+        """
+        pass
+
+
+class IResponseSynthesizer(ABC):
+    """Interface for response synthesis components."""
+    
+    @abstractmethod
+    def synthesize(
+        self, 
+        query_bundle_or_str: Union[QueryBundle, str], 
+        nodes: List[NodeWithScore], 
+        **kwargs
+    ) -> Response:
+        """Synthesize a response from retrieved nodes.
+        
+        Args:
+            query_bundle_or_str: The query string or QueryBundle
+            nodes: List of nodes with relevance scores
+            **kwargs: Additional arguments for synthesis
+            
+        Returns:
+            Synthesized response
+        """
+        pass
+    
+    @abstractmethod
+    async def asynthesize(
+        self, 
+        query_bundle_or_str: Union[QueryBundle, str], 
+        nodes: List[NodeWithScore], 
+        **kwargs
+    ) -> Response:
+        """Asynchronously synthesize a response from retrieved nodes.
+        
+        Args:
+            query_bundle_or_str: The query string or QueryBundle
+            nodes: List of nodes with relevance scores
+            **kwargs: Additional arguments for synthesis
+            
+        Returns:
+            Synthesized response
+        """
+        pass
+
+
+class IQueryPipeline(ABC):
+    """Interface for the query pipeline."""
+    
+    @abstractmethod
+    def query(
+        self, 
+        query_str: str, 
+        **kwargs
+    ) -> Response:
+        """Process a query through the pipeline.
+        
+        Args:
+            query_str: The query string
+            **kwargs: Additional arguments for processing
+            
+        Returns:
+            Query response
+        """
+        pass
+    
+    @abstractmethod
+    async def aquery(
+        self, 
+        query_str: str, 
+        **kwargs
+    ) -> Response:
+        """Asynchronously process a query through the pipeline.
+        
+        Args:
+            query_str: The query string
+            **kwargs: Additional arguments for processing
+            
+        Returns:
+            Query response
         """
         pass
