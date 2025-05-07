@@ -114,6 +114,64 @@ python main.py
 - **EmbedderService**: Generates embeddings using configurable providers (HuggingFace, OpenAI, Cohere, Vertex, Bedrock, Ollama, etc.) with batch processing, disk-based caching, and provider fallback. See `embedders/llamaindex_embedder_service.py` and `embedders/embedder_factory.py` for details.
 - **Vector Store**: Stores embeddings for semantic search. Supports ChromaDB, Qdrant (local/cloud), and SimpleVectorStore (in-memory fallback) via configuration. See `indexing/vector_store.py`.
 
+## Query Module
+
+The query module provides a comprehensive, modular solution for processing queries against indexed documents. It includes configurable stages for query transformation, retrieval, reranking, and synthesis, ensuring extensibility and maintainability.
+
+### Key Components
+
+- **QueryPipeline**: Orchestrates the entire query process, supporting modular configuration and performance metrics.
+- **Query Transformation**: Includes `QueryTransformer` (base), `HyDEQueryExpander`, `LLMQueryRewriter`, `QueryDecomposer` for advanced query rewriting and expansion.
+- **Retrieval**: Features `EnhancedRetriever` (vector search), `HybridRetriever` (vector + keyword), and `EnsembleRetriever` (multi-retriever with weighted scoring). All retrievers use explicit embedding model injection for consistency.
+- **Reranking**: Supports `Reranker` (base), `SemanticReranker`, `LLMReranker`, and `CohereReranker` for improved result relevance.
+- **Synthesis**: Provides `ResponseSynthesizer` (base), `SimpleResponseSynthesizer`, `RefineResponseSynthesizer`, `TreeSynthesizer`, and `CompactResponseSynthesizer` for flexible response generation.
+
+### Integration
+- Integrates with the vector store for retrieval, the embedder module for embedding consistency, and LLM providers for transformation and synthesis.
+- Configurable via `QueryPipelineConfig` and environment variables.
+
+### Embedding Consistency
+
+A critical aspect of the query module is ensuring embedding consistency between indexing and querying:
+
+1. **Problem**: LlamaIndex's `VectorIndexRetriever` defaults to OpenAI embeddings during query time if not explicitly configured.
+
+2. **Solution**:
+   - The `EnhancedRetriever` accepts an `embed_model` parameter and passes it to the `VectorIndexRetriever`.
+   - The `QueryPipeline` initializes and uses the embedder from `EmbedderFactory`.
+   - The embedder is explicitly passed to all retriever implementations.
+   - Example scripts demonstrate proper embedder configuration and usage.
+
+3. **Benefits**:
+   - Consistent embedding space between indexing and querying
+   - Improved retrieval quality and relevance
+   - Support for various embedding models (OpenAI, HuggingFace, Ollama, etc.)
+   - Clear dependency injection pattern
+
+### Query Pipeline Embedder Enhancement
+
+- **Dependency Injection**: Added proper dependency injection for the embedder in the query pipeline.
+- **Consistent Embedding**: Ensures the same embedding model is used throughout the pipeline.
+- **Factory Pattern**: Leverages `EmbedderFactory` for embedder creation.
+- **Configuration**: Maintains compatibility with the existing configuration system.
+- **Error Handling**: Improved error handling for embedding model initialization.
+
+#### Implementation Summary
+- Modified `/query/retrieval/retriever.py` to accept and use explicit embedding models.
+- Updated `/query/query_pipeline.py` to initialize and use the embedder from `EmbedderFactory` and pass it to retrievers.
+- Enhanced `/examples/query_example.py` to demonstrate explicit embedder configuration.
+- Updated memory bank and documentation files to reflect these enhancements.
+
+#### Benefits
+- **Consistency**: Same embedding model is used during both indexing and querying.
+- **Configurability**: Modular design and configuration-based approach.
+- **Reliability**: Improved retrieval quality and maintainability.
+
+#### Next Steps
+- Add more specialized retrievers and rerankers.
+- Explore additional query transformation techniques.
+- Implement comprehensive unit and integration tests for the query module.
+
 ## Output
 
 - All processed and enriched nodes are saved to `node_contents.txt` (and variants)

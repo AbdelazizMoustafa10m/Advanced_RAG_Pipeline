@@ -3,7 +3,7 @@ import logging
 import os
 import time
 import re
-from typing import List, Dict, Optional, Set, Tuple
+from typing import List, Dict, Optional, Set, Tuple, Any
 from collections import defaultdict
 from llama_index.core.schema import Document, TextNode
 
@@ -32,7 +32,27 @@ from processors.document.docling_metadata_formatter import DoclingMetadataFormat
 logger = logging.getLogger(__name__)
 
 class PipelineOrchestrator:
-    """Orchestrates the unified document processing pipeline."""
+    """
+    Orchestrates the unified document ingestion pipeline.
+    
+    This class handles the entire document ingestion process: loading documents,
+    detecting document types, processing documents through appropriate processors,
+    generating embeddings, and indexing in a vector store. It follows the single
+    responsibility principle by focusing solely on document ingestion without
+    handling query operations.
+    
+    The pipeline follows these key steps:
+    1. Document loading: Loads documents from the specified input directory
+    2. Document detection: Determines document types using detection strategies
+    3. Document routing: Routes documents to appropriate processors based on type
+    4. Document processing: Processes documents into nodes with metadata
+    5. Embedding: Generates vector embeddings for processed nodes
+    6. Indexing: Stores nodes in a vector database for later retrieval
+    
+    The orchestrator returns both the processed nodes, the created index, and the
+    vector store, allowing other components (like a separate query pipeline) to use
+    these artifacts for retrieval and generation tasks.
+    """
 
     def __init__(self, config: UnifiedConfig, document_registry=None, llm_provider=None):
         """Initialize the orchestrator with configuration."""
@@ -599,7 +619,22 @@ class PipelineOrchestrator:
         return document_groups
     
     def run(self):
-        """Runs the full ingestion pipeline."""
+        """
+        Runs the full ingestion pipeline.
+        
+        This method orchestrates the entire document ingestion process:
+        1. Loads documents from the configured input directory
+        2. Groups document parts by their original source
+        3. Processes document groups through appropriate processors
+        4. Embeds the resulting nodes (if embedder is available)
+        5. Indexes the nodes in a vector store (if available)
+        
+        Returns:
+            tuple: (final_nodes, index, vector_store)
+                - final_nodes (List[TextNode]): All processed nodes
+                - index (VectorStoreIndex or None): The created index (if indexing was successful)
+                - vector_store (IVectorStore or None): The vector store instance (if available)
+        """
         start_time = time.time()
         self.processing_start_time = start_time
         logger.info(f"Starting unified pipeline run at {start_time}")
@@ -633,13 +668,9 @@ class PipelineOrchestrator:
         # 2. Process documents using the document router
         all_processed_nodes = self._process_document_groups(grouped_documents, original_document_count)
         
-        # 3. Optional: Apply common post-processing/standardization enrichers if needed
-        # enricher = Standardizer(...)
-        # final_nodes = enricher.enrich(all_processed_nodes)
-        
         final_nodes = all_processed_nodes  # Assuming no separate standardizer for now
         
-        # 4. Embed nodes if embedder is available
+        # 3. Embed nodes if embedder is available
         if self.embedder and final_nodes:
             try:
                 logger.info(f"Embedding {len(final_nodes)} nodes with {self.config.embedder.provider} provider")
@@ -661,7 +692,7 @@ class PipelineOrchestrator:
                 
                 final_nodes = embedded_nodes
                 
-                # 5. Index nodes in vector store if available
+                # 4. Index nodes in vector store if available
                 if self.vector_store and nodes_with_embeddings > 0:
                     try:
                         index_start_time = time.time()
@@ -702,4 +733,5 @@ class PipelineOrchestrator:
         logger.info(f"Pipeline run completed. Generated {len(final_nodes)} nodes in {total_time:.2f} seconds.")
         logger.info(f"Processing efficiency: {nodes_per_second:.2f} nodes/second")
         
-        return final_nodes
+        # Return the processed nodes, the created index, and the vector store for use by query components
+        return final_nodes, index, self.vector_store

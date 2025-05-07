@@ -6,6 +6,8 @@ This document outlines the architecture of the **Advanced RAG Pipeline**, a syst
 
 The core goal is to create high-quality, context-aware text nodes suitable for semantic search via vector embeddings and for providing relevant context to Large Language Models (LLMs) during query time. Key features include robust document type detection, specialized chunking strategies for different content types (Docling for documents, AST-based for code), optional LLM-based metadata enrichment, persistent document processing status tracking via a registry, and flexible configuration.
 
+The system also provides a comprehensive query module with modular components for query transformation, retrieval, reranking, and synthesis, ensuring embedding consistency between indexing and querying for optimal retrieval performance.
+
 ## 2. Key Features
 
 *   **Unified Ingestion:** Handles diverse sources like code repositories and document folders.
@@ -13,6 +15,11 @@ The core goal is to create high-quality, context-aware text nodes suitable for s
 *   **Specialized Chunking:**
     *   **Documents (PDF, etc.):** Leverages `DoclingReader` and `DoclingNodeParser` for structure-aware chunking.
     *   **Code:** Employs `EnhancedCodeSplitter` with multi-strategy fallback (prioritizing Chonkie AST, LlamaIndex AST, semantic, basic lines).
+*   **Advanced Query Processing:**
+    *   **Query Transformation:** Supports query rewriting, expansion, and decomposition.
+    *   **Multiple Retrieval Strategies:** Vector, hybrid, and ensemble retrieval options.
+    *   **Reranking:** Semantic, LLM-based, and provider-specific reranking.
+    *   **Response Synthesis:** Multiple synthesis strategies from simple to tree-based.
 *   **Metadata Formatting:** Standardizes and formats raw metadata (e.g., from Docling) into clean, readable keys using `DoclingMetadataFormatter`.
 *   **Conditional LLM Enrichment:** Generates titles, summaries, and potentially Q&A pairs for nodes using configured LLMs (`DoclingMetadataGenerator`, `CodeMetadataGenerator`), controlled by flags (`enrich_documents`, `enrich_code`). Enrichment prompts are designed to utilize available context.
 *   **Modular Embedding:** Generates vector embeddings for nodes using configurable embedding providers (HuggingFace, OpenAI, Ollama, etc.) via `LlamaIndexEmbedderService`, with batch processing and caching for performance.
@@ -148,8 +155,17 @@ graph TD
     *   **Key Files:** `providers.py`, `prompts.py`, `cache.py`
 
 9.  **`indexing/`**:
-    *   **Role:** (Assumed based on RAG context) Handles embedding generation and vector store interaction (e.g., ChromaDB).
-    *   **Key Files:** `vector_store.py` (Example Adapter)
+    *   **Role:** Handles embedding generation and vector store interaction (e.g., ChromaDB, Qdrant, SimpleVectorStore).
+    *   **Key Files:** `vector_store.py` (Vector store adapters and factory)
+
+10. **`query/`**:
+    *   **Role:** Handles query processing, retrieval, reranking, and response synthesis.
+    *   **Key Files:**
+        *   `query_pipeline.py`: Main pipeline orchestration.
+        *   `retrieval/retriever.py`: Vector, hybrid, and ensemble retrievers.
+        *   `transformers/`: Query transformation strategies.
+        *   `reranking/`: Reranking implementations.
+        *   `synthesis/`: Response synthesis strategies.
 
 9.  **`pipeline/`**:
     *   **Role:** Orchestrates the entire ingestion process.
@@ -249,7 +265,83 @@ Environment variables (via `.env`) are used for sensitive information like API k
 
 - **New Embedding Providers**: Add a new provider class to `embedders/`, update the factory, and add config options.
 - **New Vector Stores**: Add a new adapter to `indexing/`, update the factory, and add config options.
+- **Query Components**: Add new transformers, retrievers, rerankers, or synthesizers to the query module.
 - **Fallbacks**: All new providers should implement error/fallback logic for robust operation.
 - **Testing**: In-memory vector store and mock embedders make testing easy without external dependencies.
 
 Other extension points (detectors, chunkers, enrichers) follow the same modular, interface-driven pattern.
+
+## 9. Query Module Architecture
+
+### Overview
+
+The query module provides a comprehensive solution for processing queries against the indexed documents. It implements a modular, configurable approach to query transformation, retrieval, reranking, and synthesis.
+
+### Components
+
+1. **Query Pipeline**
+   - `QueryPipeline` class orchestrates the entire query process
+   - Configurable components for each stage of the pipeline
+   - Support for caching and performance metrics
+   - Embedding consistency between indexing and querying
+
+2. **Query Transformation**
+   - `QueryTransformer` base class with multiple implementations:
+     - `HyDEQueryExpander`: Hypothetical document expansion
+     - `LLMQueryRewriter`: LLM-based query rewriting
+     - `QueryDecomposer`: Complex query decomposition
+
+3. **Retrieval**
+   - `EnhancedRetriever`: Base retriever with vector search
+   - `HybridRetriever`: Combines vector and keyword search
+   - `EnsembleRetriever`: Combines multiple retrievers with weighted scoring
+   - Proper embedding model integration for consistent retrieval
+
+4. **Reranking**
+   - `Reranker` base class with multiple implementations:
+     - `SemanticReranker`: Semantic similarity reranking
+     - `LLMReranker`: LLM-based reranking
+     - `CohereReranker`: Cohere-specific reranking
+
+5. **Synthesis**
+   - `ResponseSynthesizer` base class with multiple implementations:
+     - `SimpleResponseSynthesizer`: Direct synthesis
+     - `RefineResponseSynthesizer`: Iterative refinement
+     - `TreeSynthesizer`: Tree-based synthesis
+     - `CompactResponseSynthesizer`: Concise response generation
+
+### Query Flow
+
+```mermaid
+graph TD
+    A[User Query] --> B[QueryPipeline];
+    B --> C[Query Transformation];
+    C --> D[Retrieval];
+    D --> E[Reranking];
+    E --> F[Response Synthesis];
+    F --> G[Final Response];
+    
+    H[EmbedderFactory] --> D;
+    I[VectorStoreIndex] --> D;
+    J[LLM Provider] --> C;
+    J --> E;
+    J --> F;
+```
+
+### Embedding Consistency
+
+A critical aspect of the query module is ensuring embedding consistency between indexing and querying:
+
+1. **Problem**: LlamaIndex's `VectorIndexRetriever` defaults to OpenAI embeddings during query time if not explicitly configured.
+
+2. **Solution**: 
+   - The `EnhancedRetriever` accepts an `embed_model` parameter and passes it to the `VectorIndexRetriever`
+   - The `QueryPipeline` initializes and uses the embedder from `EmbedderFactory`
+   - The embedder is explicitly passed to all retriever implementations
+   - Examples demonstrate proper embedder configuration and usage
+
+3. **Benefits**:
+   - Consistent embedding space between indexing and querying
+   - Improved retrieval quality and relevance
+   - Support for various embedding models (OpenAI, HuggingFace, Ollama, etc.)
+   - Clear dependency injection pattern
