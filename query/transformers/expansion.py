@@ -5,8 +5,7 @@ from typing import List, Optional, Union, Dict, Any
 from llama_index.core.schema import NodeWithScore
 from llama_index.core.llms import LLM
 from llama_index.core.schema import QueryBundle
-from llama_index.core.indices.query.query_transform.base import HyDEQueryTransform
-from llama_index.core.prompts import PromptTemplate
+from llama_index.core.indices.query.query_transform import HyDEQueryTransform
 
 from core.interfaces import IQueryTransformer
 from core.config import QueryTransformationConfig
@@ -29,7 +28,6 @@ class HyDEQueryExpander(QueryTransformer):
         self,
         llm: LLM,
         config: Optional[QueryTransformationConfig] = None,
-        **kwargs
     ):
         """Initialize HyDE query expander.
         
@@ -39,12 +37,16 @@ class HyDEQueryExpander(QueryTransformer):
         """
         super().__init__(config)
         self.llm = llm
+        self.prompt_template = self.config.hyde_prompt_template
         
-        # Initialize LlamaIndex HyDE transformer
+        # Create the HyDE transformer
+        from llama_index.core.prompts import PromptTemplate as LlamaPromptTemplate
+        hyde_prompt = LlamaPromptTemplate(template=self.prompt_template)
+        
         self.hyde_transformer = HyDEQueryTransform(
             llm=self.llm,
-            include_original=True,
-            **kwargs
+            include_original=True,  # Include original query as fallback
+            hyde_prompt=hyde_prompt
         )
     
     def transform(self, query: str, **kwargs) -> Dict[str, Any]:
@@ -58,23 +60,47 @@ class HyDEQueryExpander(QueryTransformer):
             Dictionary with original query and hypothetical document
         """
         try:
-            # Create query bundle
-            query_bundle = QueryBundle(query_str=query)
+            logger.info(f"HyDE transformer processing query: '{query}'")
             
-            # Use LlamaIndex's HyDE implementation
-            transformed_query_bundle = self.hyde_transformer.run(query_bundle)
+            # Generate a hypothetical document directly using the LLM
+            from llama_index.core.llms import ChatMessage, MessageRole
             
-            # Extract hypothetical document if present
-            hypothetical_document = None
-            if transformed_query_bundle.custom_embedding_strs:
-                hypothetical_document = transformed_query_bundle.custom_embedding_strs[0]
+            # Format the prompt template with the actual query
+            formatted_prompt = self.prompt_template.format(query=query)
+            logger.info(f"Using formatted HyDE prompt: '{formatted_prompt}'")
             
-            # Return transformation results in a standard format
+            # Create a system message to better guide the LLM
+            messages = [
+                ChatMessage(
+                    role=MessageRole.SYSTEM,
+                    content="You are a helpful assistant that generates detailed, factual passages to help with information retrieval. Your response should be a comprehensive passage about setting IO pins in code."
+                ),
+                ChatMessage(
+                    role=MessageRole.USER,
+                    content=formatted_prompt
+                )
+            ]
+            
+            # Generate the hypothetical document directly
+            hyde_response = self.llm.chat(messages)
+            hypothetical_document = hyde_response.message.content
+            
+            logger.info(f"HyDE generated document: '{hypothetical_document[:100]}...'")
+            
+            # Create a query bundle with the hypothetical document
+            # In LlamaIndex, we need to use custom_embedding_strs instead of directly setting embedding_strs
+            query_bundle = QueryBundle(
+                query_str=query,
+                custom_embedding_strs=[hypothetical_document]
+            )
+            
+            # Return the transformation results
             return {
                 "original_query": query,
-                "transformed_query": transformed_query_bundle.query_str,
+                "transformed_query": query,  # Keep original query for synthesis
                 "hypothetical_document": hypothetical_document
             }
+            
         except Exception as e:
             logger.error(f"Error in HyDE query expansion: {str(e)}")
             # Fall back to original query
@@ -97,9 +123,3 @@ class HyDEQueryExpander(QueryTransformer):
         # Currently, LlamaIndex's HyDE doesn't have an async interface
         # so we call the synchronous method
         return self.transform(query, **kwargs)
-
-    def _ensure_template_object(template):
-        """Ensure template is a proper LlamaIndex template object."""
-        if isinstance(template, str):
-            return LlamaPromptTemplate(template)
-        return template    

@@ -56,12 +56,20 @@ def print_source_nodes(nodes, max_nodes=3):
         print(f"Source {i+1} (score: {node.score:.4f}):")
         print(f"  Source: {node.node.metadata.get('file_path', 'Unknown')}")
         
-        # Format content (first 100 chars)
+        # Show more context - first 300 chars
         content = node.node.get_content()
-        if len(content) > 100:
-            content = content[:97] + "..."
+        if len(content) > 300:
+            displayed_content = content[:297] + "..."
+        else:
+            displayed_content = content
+            
+        print(f"  Content: {displayed_content}")
         
-        print(f"  Content: {content}")
+        # Print key metadata
+        print("  Metadata:")
+        for key in ['doc_type', 'section', 'title']:
+            if key in node.node.metadata:
+                print(f"    {key}: {node.node.metadata[key]}")
         print()
 
 def initialize_Pipeline():
@@ -293,17 +301,63 @@ def run_basic_query_example():
     index = vector_store.load()
     
     # Create query pipeline with properly configured components
+    # Disable caching to ensure we see the full pipeline execution
+    pipeline_config = QueryPipelineConfig()
+    pipeline_config.cache_results = False
+    
     query_pipeline = QueryPipeline(
-        config=QueryPipelineConfig(),
+        config=pipeline_config,
         index=index,
         llm=query_llm,
         embedder=embedder,  # Pass the embedder explicitly
     )
     
-    # Run a simple query
-    query = "how can I SET IO PIN?"
+    # Run a simple query with a slight variation to avoid cache hits
+    query = "how can I set an IO pin in my code?"
     
+    # Debug: Extract and print the HyDE hypothetical document
     logger.info(f"Running query: '{query}'")
+    
+    # Add debug code to verify HyDE is working correctly
+    print("\n===== HyDE Debug Information =====")
+    
+    # Get the HyDE transformer
+    hyde_transformer = None
+    for transformer in query_pipeline.query_transformers:  # Use query_transformers instead of transformers
+        if isinstance(transformer, HyDEQueryExpander):
+            hyde_transformer = transformer
+            break
+    
+    if hyde_transformer:
+        # Process the query with HyDE transformer only to see the result
+        hyde_result = hyde_transformer.transform(query)
+        hypothetical_doc = hyde_result.get("hypothetical_document")
+        
+        print("Original Query:", query)
+        print("\nHyDE Generated Document:")
+        print("-" * 80)
+        print(hypothetical_doc)
+        print("-" * 80)
+        
+        # Create a query bundle to verify custom_embedding_strs
+        from llama_index.core.schema import QueryBundle
+        query_bundle = QueryBundle(
+            query_str=query,
+            custom_embedding_strs=[hypothetical_doc]
+        )
+        
+        # Verify that custom_embedding_strs is being used
+        print("\nVerifying QueryBundle:")
+        print(f"- Has custom_embedding_strs: {hasattr(query_bundle, 'custom_embedding_strs')}")
+        if hasattr(query_bundle, 'custom_embedding_strs'):
+            print(f"- Length of custom_embedding_strs: {len(query_bundle.custom_embedding_strs)}")
+            print(f"- First 100 chars: {query_bundle.custom_embedding_strs[0][:100]}...")
+    else:
+        print("HyDE transformer not found in the pipeline!")
+    
+    print("===== End of HyDE Debug Information =====\n")
+    
+    # Run the actual query
     start_time = time.time()
     response = query_pipeline.query(query)
     end_time = time.time()
@@ -427,7 +481,7 @@ def run_advanced_query_example():
     )
     
     # Run a complex query
-    query = "Explain how the different techniques for FBL Validation work and how each of them affect the FBL behviour when it comes to Memory and which is the most effective FBL Validation strategy"
+    query = "Explain how the reranking components work and how they improve retrieval quality"
     
     logger.info(f"Running query with advanced configuration: '{query}'")
     start_time = time.time()
@@ -505,6 +559,23 @@ def run_query_component_comparison():
         from llama_index.llms import OpenAI
         query_llm = OpenAI()
     
+    # Create embedder with explicit configuration
+    embedder_config = EmbedderConfig(
+        provider=os.getenv("EMBEDDER_PROVIDER", "ollama"),
+        model_name=os.getenv("EMBEDDER_MODEL", "nomic-embed-text"),
+        api_key_env_var=os.getenv("EMBEDDER_API_KEY_ENV_VAR"),
+        api_base=os.getenv("EMBEDDER_API_BASE"),
+        embed_batch_size=int(os.getenv("EMBEDDER_BATCH_SIZE", "10")),
+        use_cache=os.getenv("EMBEDDER_USE_CACHE", "True").lower() == "true",
+        cache_dir=os.getenv("EMBEDDER_CACHE_DIR", "./.cache/embeddings")
+    )
+    
+    # Log embedder configuration
+    logger.info(f"Using embedder provider: {embedder_config.provider}")
+    logger.info(f"Using embedder model: {embedder_config.model_name}")
+    
+    # Create embedder instance
+    embedder = EmbedderFactory.create_embedder(embedder_config)
 
     vector_store = VectorStoreFactory.create_vector_store(vector_store_config)
     index = vector_store.load()
@@ -532,7 +603,24 @@ def run_query_component_comparison():
     
     # Get retrieval results once
     from query.retrieval import EnhancedRetriever
-    retriever = EnhancedRetriever(index=index)
+    
+    # Create a direct LlamaIndex embedding model instead of using our custom wrapper
+    # This avoids the compatibility issue with get_agg_embedding_from_queries
+    try:
+        if os.getenv("EMBEDDER_PROVIDER", "").lower() == "ollama":
+            from llama_index.embeddings.ollama import OllamaEmbedding
+            direct_embed_model = OllamaEmbedding(model_name=os.getenv("EMBEDDER_MODEL", "nomic-embed-text"))
+        else:
+            # Default to HuggingFace which doesn't need API keys
+            from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+            direct_embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    except Exception as e:
+        logger.warning(f"Error creating embedding model: {e}. Using default embedding.")
+        from llama_index.embeddings import DefaultEmbedding
+        direct_embed_model = DefaultEmbedding()
+    
+    # Use the direct embedding model with the retriever
+    retriever = EnhancedRetriever(index=index, embed_model=direct_embed_model)
     retrieved_nodes = retriever.retrieve(query, top_k=5)
     
     # Test each synthesizer
@@ -553,7 +641,7 @@ def main():
     
     try:
         # Run the examples
-        run_basic_query_example()
+        #run_basic_query_example()
         run_advanced_query_example()
         run_query_component_comparison()
         
