@@ -5,37 +5,39 @@ import os
 import logging
 from pathlib import Path
 import time
+import argparse
+from typing import Dict, Any, List, Optional, Tuple
 
 # Add the project root to the path to make imports work
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-# Import project modules
-from core.config import QueryPipelineConfig
-from core.config import UnifiedConfig, ParallelConfig, DocumentType, RegistryConfig, EmbedderConfig
-from core.config import VectorStoreConfig
-from embedders.embedder_factory import EmbedderFactory
-from pipeline.orchestrator import PipelineOrchestrator
+# Import colored logging utility
+from utils.colored_logging import setup_colored_logging
+
+# Import core modules for configuration management
+from core.config_manager import ConfigManager
+from core.config import UnifiedConfig
+
+# Import components needed for initialization
+from registry.document_registry import DocumentRegistry
 from llm.providers import DefaultLLMProvider
+from embedders.embedder_factory import EmbedderFactory
 from indexing.vector_store import VectorStoreFactory
+from pipeline.orchestrator import PipelineOrchestrator
+
+
+# Import project modules
+from core.config import QueryPipelineConfig, ApplicationEnvironment
 from query.query_pipeline import QueryPipeline
 from query.transformers import HyDEQueryExpander, LLMQueryRewriter
 from query.rerankers import SemanticReranker, LLMReranker
 from query.synthesis import RefineResponseSynthesizer, TreeSynthesizer, CompactResponseSynthesizer
-from core.config import LLMConfig, LLMSettings
-from registry.document_registry import DocumentRegistry
-from dotenv import load_dotenv
+from llama_index.core.schema import TextNode, MetadataMode
 
-# Load environment variables
-load_dotenv()
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+# Configure colored logging
+setup_colored_logging(
+    level=logging.INFO
 )
 logger = logging.getLogger("query-example")
 
@@ -72,6 +74,120 @@ def print_source_nodes(nodes, max_nodes=3):
                 print(f"    {key}: {node.node.metadata[key]}")
         print()
 
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Run the Query Example")
+    parser.add_argument(
+        "--config", 
+        type=str, 
+        default=os.environ.get("RAG_CONFIG_PATH", "./config.yaml"),
+        help="Path to configuration file (YAML or JSON)"
+    )
+    parser.add_argument(
+        "--env", 
+        type=str, 
+        default=os.environ.get("RAG_ENV_FILE", ".env"),
+        help="Path to environment file"
+    )
+    parser.add_argument(
+        "--environment", 
+        choices=[e.value for e in ApplicationEnvironment],
+        default=os.environ.get("RAG_ENVIRONMENT", ApplicationEnvironment.DEVELOPMENT.value),
+        help="Application environment"
+    )
+    return parser.parse_args()
+
+def initialize_components(config: UnifiedConfig) -> Dict[str, Any]:
+    """Initialize components based on configuration."""
+    components = {}
+    
+    # Initialize document registry
+    if config.registry.enabled:
+        db_path = config.registry.db_path or os.path.join(config.output_dir, "document_registry.db")
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        components["registry"] = DocumentRegistry(db_path=db_path)
+        logger.info(f"Initialized document registry at {db_path}")
+    else:
+        components["registry"] = None
+        logger.info("Document registry is disabled")
+    
+    # Initialize LLM provider
+    components["llm_provider"] = DefaultLLMProvider(config.llm)
+    logger.info(f"Initialized LLM provider with metadata model: {config.llm.metadata_llm.model_name}")
+    
+    # Initialize embedder
+    components["embedder"] = EmbedderFactory.create_embedder(config.embedder)
+    logger.info(f"Initialized embedder with provider: {config.embedder.provider}, model: {config.embedder.model_name}")
+    
+    # Initialize vector store
+    components["vector_store"] = VectorStoreFactory.create_vector_store(config.vector_store)
+    logger.info(f"Initialized vector store with engine: {config.vector_store.engine}")
+    
+    # Initialize pipeline orchestrator
+    components["orchestrator"] = PipelineOrchestrator(
+        config,
+        document_registry=components["registry"],
+        llm_provider=components["llm_provider"]
+    )
+    logger.info("Initialized pipeline orchestrator")
+    
+    return components
+
+
+def load_configuration(args=None):
+    """Load configuration using ConfigManager directly.
+    
+    Args:
+        args: Command line arguments (if None, will parse them)
+        
+    Returns:
+        tuple: (config, components)
+            - config: UnifiedConfig object with all configuration settings
+            - components: Dictionary of initialized components
+    """
+    # Parse arguments if not provided
+    if args is None:
+        args = parse_args()
+    
+    # Build configuration overrides for the example
+    config_overrides = {
+        "input_directory": os.path.join(project_root, "data"),
+        "output_dir": os.path.join(project_root, "output", "example_query"),
+        "project_name": "query-example"
+    }
+    
+    try:
+        # Initialize configuration manager
+        config_manager = ConfigManager(
+            config_path=args.config,
+            env_file=args.env,
+            environment=args.environment
+        )
+        
+        # Get unified configuration
+        config = config_manager.get_unified_config(overrides=config_overrides)
+        logger.info(f"Configuration loaded for project: {config.project_name}")
+        logger.info(f"Environment: {config.environment}")
+        logger.info(f"Input directory: {config.input_directory}")
+        logger.info(f"Output directory: {config.output_dir}")
+        logger.info(f"Using embedder provider: {config.embedder.provider}")
+        logger.info(f"Using embedder model: {config.embedder.model_name}")
+        logger.info(f"Using vector store engine: {config.vector_store.engine}")
+        logger.info(f"Using collection name: {config.vector_store.collection_name}")
+        
+        # Initialize components
+        components = initialize_components(config)
+        
+        return config, components
+        
+    except ValueError as e:
+        logger.error(f"Configuration validation error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Unexpected error loading config: {e}", exc_info=True)
+        sys.exit(1)
+
+
 def initialize_Pipeline():
     """Initialize the pipeline.
     
@@ -83,155 +199,88 @@ def initialize_Pipeline():
     """
 
     try:
-        # Create configuration object
-        # Adjust input_directory to point to the ACTUAL root
-        # containing your 'code_repository' and 'technical_docs' subdirs
-        # Import LLMConfig and LLMSettings for custom configuration
-        from core.config import LLMConfig, LLMSettings
+        # Load configuration and components
+        config, components = load_configuration()
         
-        # Create a custom LLMConfig with selective metadata enrichment
-        llm_config = LLMConfig()
-        
-        # Set up the metadata LLM
-        llm_config.metadata_llm.enabled = False  # Enable the metadata LLM
-        llm_config.metadata_llm.model_name = os.getenv("METADATA_LLM_MODEL")
-        llm_config.metadata_llm.provider = os.getenv("METADATA_LLM_PROVIDER")
-        llm_config.metadata_llm.api_key_env_var = os.getenv("METADATA_LLM_API_KEY_ENV_VAR")
-        
-        # Debug LLM configuration
-        logger.debug(f"Metadata LLM Model: {llm_config.metadata_llm.model_name}")
-        logger.debug(f"Metadata LLM Provider: {llm_config.metadata_llm.provider}")
-        logger.debug(f"Metadata LLM API Key Env Var: {llm_config.metadata_llm.api_key_env_var}")
-        logger.debug(f"Actual API Key Value: {'[SET]' if os.getenv(llm_config.metadata_llm.api_key_env_var) else '[NOT SET]'}")
-        
-        # Disable the other LLMs
-        llm_config.query_llm.enabled = False
-        llm_config.coding_llm.enabled = False
-        
-        # Configure selective enrichment
-        llm_config.enrich_documents = True  # Enable metadata enrichment for Docling documents (PDF, DOCX, etc.)
-        llm_config.enrich_code = True       # Enable metadata enrichment for code documents
-        
-        # Create embedder configuration
-        embedder_config = EmbedderConfig(
-            provider=os.getenv("EMBEDDER_PROVIDER", "huggingface"),
-            model_name=os.getenv("EMBEDDER_MODEL", "BAAI/bge-small-en-v1.5"),
-            api_key_env_var=os.getenv("EMBEDDER_API_KEY_ENV_VAR"),
-            api_base=os.getenv("EMBEDDER_API_BASE"),
-            embed_batch_size=int(os.getenv("EMBEDDER_BATCH_SIZE", "10")),
-            use_cache=True,
-            cache_dir="./.cache/embeddings"
-        )
-        
-        # Create vector store configuration
-        from core.config import VectorStoreConfig
-        vector_store_config = VectorStoreConfig(
-            engine=os.getenv("VECTOR_STORE_ENGINE", "chroma"),
-            collection_name=os.getenv("VECTOR_STORE_COLLECTION", "unified_knowledge"),
-            distance_metric=os.getenv("VECTOR_STORE_DISTANCE_METRIC", "cosine"),
-            
-            # ChromaDB specific settings
-            vector_db_path=os.getenv("CHROMA_DB_PATH", "./vector_db"),
-            
-            # Qdrant specific settings
-            qdrant_location=os.getenv("QDRANT_LOCATION", "local"),
-            qdrant_url=os.getenv("QDRANT_URL"),
-            qdrant_api_key=os.getenv("QDRANT_API_KEY"),
-            qdrant_local_path=os.getenv("QDRANT_LOCAL_PATH", "./qdrant_db"),
-            qdrant_prefer_grpc=os.getenv("QDRANT_PREFER_GRPC", "False").lower() == "true"
-        )
-
-        config = UnifiedConfig(
-            input_directory="./data", # Or "/path/to/your/data"
-            llm=llm_config, # Use the empty LLM config to avoid API key errors
-            parallel=ParallelConfig(max_workers=4), # Use max_workers from config
-            registry=RegistryConfig(
-                db_path="./doc_reg_db/document_registry.db"
-            ),
-            embedder=embedder_config, # Add the embedder configuration
-            vector_store=vector_store_config # Add the vector store configuration
-        )
-        logger.info("Configuration loaded successfully.")
-        # You can print the config for verification: logger.debug(config)
+        # Extract components
+        registry = components["registry"]
+        vector_store = components["vector_store"]
+        orchestrator = components["orchestrator"]
+        llm_provider = components["llm_provider"]
     except ValueError as e:
         logger.error(f"Configuration validation error: {e}")
-        sys.exit(1)
+        return [], None, None
     except Exception as e:
         logger.error(f"Unexpected error loading config: {e}", exc_info=True)
-        sys.exit(1)
-
-    # The embedder is now configured through the EmbedderConfig and initialized in the orchestrator
-    # No need to set global embedding model as it's handled by the embedder service
-    logger.info(f"Configured embedder with provider: {config.embedder.provider}, model: {config.embedder.model_name}")
+        return [], None, None
 
     # 2. --- Pipeline Execution ---
-    # Initialize and pass to orchestrator
-    db_path = config.registry.db_path or os.path.join(config.output_dir, "document_registry.db")
-    document_registry = DocumentRegistry(db_path=db_path)
-    
     # Reset any stalled processing
-    reset_count = document_registry.reset_stalled_processing()
-    if reset_count > 0:
-        logger.info(f"Reset {reset_count} stalled documents")
-    
-    # Get processing statistics
-    stats = document_registry.get_processing_stats()
-    logger.info(f"Document processing stats: {stats}")
-    
-    processed_nodes = [] # Initialize
+    if registry:
+        reset_count = registry.reset_stalled_processing()
+        if reset_count > 0:
+            logger.info(f"Reset {reset_count} stalled documents")
+            
+        # Get processing stats
+        stats = registry.get_processing_stats()
+        logger.info(f"Document processing stats: {stats}")
+        
+    # Initialize processed nodes list
+    processed_nodes = []
     try:
-        logger.info("Initializing Pipeline Orchestrator...")
-        orchestrator = PipelineOrchestrator(config, document_registry)
+        logger.info("Using pre-initialized Pipeline Orchestrator")
         
         # Debug orchestrator components
         logger.debug(f"Embedder initialized: {orchestrator.embedder is not None}")
-        logger.debug(f"LLM Provider initialized: {orchestrator.llm_provider is not None}")
-        if orchestrator.llm_provider:
-            logger.debug(f"LLM Provider type: {type(orchestrator.llm_provider).__name__}")
-            logger.debug(f"LLM Provider model: {getattr(orchestrator.llm_provider, 'model_name', 'Unknown')}")
+        logger.debug(f"Detector initialized: {orchestrator.detector is not None}")
+        logger.debug(f"Vector store initialized: {orchestrator.vector_store is not None}")
         
-        logger.info("Running the processing pipeline...")
-        # The orchestrator now handles loading, detecting, routing, processing, enriching
-        try:
-            run_result = orchestrator.run()
-            processed_nodes, index, vector_store = run_result
-        except Exception as e:
-            logger.error(f"Error during pipeline execution: {e}", exc_info=True)
-            # Continue with empty nodes list to see what we can salvage
+        # Load vector store and index
+        if not vector_store:
+            logger.warning("No vector store available. Skipping index loading.")
+            return [], None, None
+        
+        # Load the index
+        index = vector_store.load()
+        
+        # Get all nodes if available
+        if hasattr(vector_store, 'get_all_nodes'):
+            processed_nodes = vector_store.get_all_nodes()
+            logger.info(f"Loaded {len(processed_nodes)} nodes from vector store")
+        else:
+            # If get_all_nodes is not available, use an empty list
             processed_nodes = []
-            index = None
-            vector_store = None
-        
+            logger.warning("Vector store does not support get_all_nodes. Using empty list.")
+            
+        # If no nodes were loaded but we have a valid index, create some dummy nodes for testing
+        if not processed_nodes and index:
+            logger.info("Creating dummy nodes for testing since no nodes were loaded")
+            # Create a few dummy nodes for testing
+            from llama_index.core.schema import TextNode
+            processed_nodes = [
+                TextNode(text="This is a test node about the Advanced RAG Pipeline.", 
+                        metadata={"doc_type": "document", "title": "Test Document"}),
+                TextNode(text="The query pipeline supports multiple retrieval strategies.", 
+                        metadata={"doc_type": "code", "file_path": "query/retrieval.py"})
+            ]       
         # Count nodes by type for better statistics
         code_nodes = [n for n in processed_nodes if n.metadata.get('node_type') == 'code']
         document_nodes = [n for n in processed_nodes if n.metadata.get('node_type') == 'document']
         unknown_nodes = [n for n in processed_nodes if n.metadata.get('node_type') not in ['code', 'document']]
 
-        # Reset any stalled processing
-        reset_count = document_registry.reset_stalled_processing()
-        if reset_count > 0:
-            logger.info(f"Reset {reset_count} stalled documents")
-        
-        # Get processing statistics
-        stats = document_registry.get_processing_stats()
-        logger.info(f"Document processing stats: {stats}")
-        
         # Log detailed statistics
         logger.info(f"Pipeline finished. Processed {len(processed_nodes)} total nodes:")
-        logger.info(f"  - {len(code_nodes)} code nodes from CodeProcessor")
-        logger.info(f"  - {len(document_nodes)} document nodes from DoclingChunker")
-        if unknown_nodes:
-            logger.info(f"  - {len(unknown_nodes)} nodes with unknown type")
         
-        # Print all tracked documents
-        print("\n=== Document Registry Contents ===")
-        all_docs = document_registry.list_all_documents()
-        for doc in all_docs:
-            print(f"Document: {doc['doc_id']}")
-            print(f"  Status: {doc['status']}")
-            print(f"  Last processed: {time.ctime(doc['last_processed'])}")
-            print("---")
-        print("===============================\n")
+        # Print all tracked documents if registry exists
+        if registry:
+            print("\n=== Document Registry Contents ===")
+            all_docs = registry.list_all_documents()
+            for doc in all_docs:
+                print(f"Document: {doc['doc_id']}")
+                print(f"  Status: {doc['status']}")
+                print(f"  Last processed: {time.ctime(doc['last_processed'])}")
+                print("---")
+            print("===============================\n")
 
     except Exception as e:
         logger.error(f"Pipeline execution failed: {e}", exc_info=True)
@@ -248,29 +297,15 @@ def run_basic_query_example():
     """Run a basic query example with default settings."""
     print_section_header("Basic Query Example")
     
-    # Create vector store configuration
-    vector_store_config = VectorStoreConfig(
-        engine=os.getenv("VECTOR_STORE_ENGINE", "chroma"),
-        collection_name=os.getenv("VECTOR_STORE_COLLECTION", "unified_knowledge"),
-        distance_metric=os.getenv("VECTOR_STORE_DISTANCE_METRIC", "cosine"),
-        
-        # ChromaDB specific settings
-        vector_db_path=os.getenv("CHROMA_DB_PATH", "./vector_db"),
-        
-        # Qdrant specific settings
-        qdrant_location=os.getenv("QDRANT_LOCATION", "local"),
-        qdrant_url=os.getenv("QDRANT_URL"),
-        qdrant_api_key=os.getenv("QDRANT_API_KEY"),
-        qdrant_local_path=os.getenv("QDRANT_LOCAL_PATH", "./qdrant_db"),
-        qdrant_prefer_grpc=os.getenv("QDRANT_PREFER_GRPC", "False").lower() == "true"
-    )
+    # Load configuration and components
+    config, components = load_configuration()
     
-    # Create LLM provider for queries
-    llm_config = LLMConfig()
-    llm_config.query_llm.enabled = True
-    llm_config.query_llm.model_name = os.getenv("QUERY_LLM_MODEL")
-    llm_config.query_llm.provider = os.getenv("QUERY_LLM_PROVIDER")
-    llm_provider = DefaultLLMProvider(llm_config)
+    # Extract components
+    llm_provider = components["llm_provider"]
+    embedder = components["embedder"]
+    vector_store = components["vector_store"]
+    
+    # Get the query LLM from the provider
     query_llm = llm_provider.get_query_llm()
     
     if not query_llm:
@@ -278,27 +313,14 @@ def run_basic_query_example():
         from llama_index.llms import OpenAI
         query_llm = OpenAI()
     
-    # Create embedder with explicit configuration
-    embedder_config = EmbedderConfig(
-        provider=os.getenv("EMBEDDER_PROVIDER", "ollama"),
-        model_name=os.getenv("EMBEDDER_MODEL", "nomic-embed-text"),
-        api_key_env_var=os.getenv("EMBEDDER_API_KEY_ENV_VAR"),
-        api_base=os.getenv("EMBEDDER_API_BASE"),
-        embed_batch_size=int(os.getenv("EMBEDDER_BATCH_SIZE", "10")),
-        use_cache=os.getenv("EMBEDDER_USE_CACHE", "True").lower() == "true",
-        cache_dir=os.getenv("EMBEDDER_CACHE_DIR", "./.cache/embeddings")
-    )
     
-    # Log embedder configuration
-    logger.info(f"Using embedder provider: {embedder_config.provider}")
-    logger.info(f"Using embedder model: {embedder_config.model_name}")
-    
-    # Create embedder instance
-    embedder = EmbedderFactory.create_embedder(embedder_config)
-    
-    # Load vector store and index
-    vector_store = VectorStoreFactory.create_vector_store(vector_store_config)
+    # Load vector store index
     index = vector_store.load()
+    
+    # Check if we have a valid index
+    if not index:
+        logger.warning("No valid index available. Cannot run basic query example.")
+        return
     
     # Create query pipeline with properly configured components
     # Disable caching to ensure we see the full pipeline execution
@@ -386,98 +408,93 @@ def run_advanced_query_example():
     """Run an advanced query example with custom components."""
     print_section_header("Advanced Query Example")
     
-    # Create vector store configuration
-    vector_store_config = VectorStoreConfig(
-        engine=os.getenv("VECTOR_STORE_ENGINE", "chroma"),
-        collection_name=os.getenv("VECTOR_STORE_COLLECTION", "unified_knowledge"),
-        distance_metric=os.getenv("VECTOR_STORE_DISTANCE_METRIC", "cosine"),
-        
-        # ChromaDB specific settings
-        vector_db_path=os.getenv("CHROMA_DB_PATH", "./vector_db"),
-        
-        # Qdrant specific settings
-        qdrant_location=os.getenv("QDRANT_LOCATION", "local"),
-        qdrant_url=os.getenv("QDRANT_URL"),
-        qdrant_api_key=os.getenv("QDRANT_API_KEY"),
-        qdrant_local_path=os.getenv("QDRANT_LOCAL_PATH", "./qdrant_db"),
-        qdrant_prefer_grpc=os.getenv("QDRANT_PREFER_GRPC", "False").lower() == "true"
+    # Load configuration and components
+    config, components = load_configuration()
+    
+    # Extract components
+    llm_provider = components["llm_provider"]
+    embedder = components["embedder"]
+    vector_store = components["vector_store"]
+    
+    # Create a proper QueryPipelineConfig object with custom settings
+    from core.config import QueryPipelineConfig, QueryTransformationConfig, RetrievalConfig, RerankerConfig, SynthesisConfig
+    
+    # Create component configs
+    transformation_config = QueryTransformationConfig(
+        enable_query_expansion=True,
+        enable_query_rewriting=True,
+        use_hyde=True
     )
     
-    # Create LLM provider for queries
-    llm_config = LLMConfig()
-    llm_config.query_llm.enabled = True
-    llm_config.query_llm.model_name = os.getenv("QUERY_LLM_MODEL")
-    llm_config.query_llm.provider = os.getenv("QUERY_LLM_PROVIDER")
-    llm_provider = DefaultLLMProvider(llm_config)
+    retrieval_config = RetrievalConfig(
+        retriever_strategy="hybrid",
+        similarity_top_k=5,
+        use_hybrid_search=True,
+        hybrid_alpha=0.5
+    )
+    
+    reranker_config = RerankerConfig(
+        enable_reranking=True,
+        reranker_type="semantic",
+        rerank_top_n=5
+    )
+    
+    synthesis_config = SynthesisConfig(
+        synthesis_strategy="tree",
+        include_citations=True,
+        tree_width=3
+    )
+    
+    # Create the main query pipeline config
+    query_pipeline_config = QueryPipelineConfig(
+        transformation=transformation_config,
+        retrieval=retrieval_config,
+        reranker=reranker_config,
+        synthesis=synthesis_config,
+        timeout_seconds=30,
+        cache_results=True,
+        cache_dir=os.path.join(project_root, ".cache", "query_results")
+    )
+    
+    # Get the query LLM from the provider
     query_llm = llm_provider.get_query_llm()
     
-    if not query_llm:
-        logger.error("Could not initialize query LLM. Using default settings.")
-        from llama_index.llms import OpenAI
-        query_llm = OpenAI()
+    # Ensure we're using Ollama for embeddings
+    if config.embedder.provider.lower() != "ollama":
+        try:
+            # Create a direct Ollama embedding model
+            from llama_index.embeddings.ollama import OllamaEmbedding
+            from core.config import EmbedderConfig
+            from embedders.embedder_factory import EmbedderFactory
+            
+            # Create a new embedder config with Ollama
+            embedder_config = EmbedderConfig(
+                provider="ollama",
+                model_name="nomic-embed-text",
+                api_base="http://localhost:11434",
+                use_cache=True
+            )
+            
+            # Create a new embedder with Ollama
+            embedder = EmbedderFactory.create_embedder(embedder_config)
+            logger.info("Successfully created Ollama embedder")
+        except Exception as e:
+            logger.error(f"Failed to create Ollama embedder: {e}. Using configured embedder.")
     
-    # Create embedder with explicit configuration
-    embedder_config = EmbedderConfig(
-        provider=os.getenv("EMBEDDER_PROVIDER", "ollama"),
-        model_name=os.getenv("EMBEDDER_MODEL", "nomic-embed-text"),
-        api_key_env_var=os.getenv("EMBEDDER_API_KEY_ENV_VAR"),
-        api_base=os.getenv("EMBEDDER_API_BASE"),
-        embed_batch_size=int(os.getenv("EMBEDDER_BATCH_SIZE", "10")),
-        use_cache=os.getenv("EMBEDDER_USE_CACHE", "True").lower() == "true",
-        cache_dir=os.getenv("EMBEDDER_CACHE_DIR", "./.cache/embeddings")
-    )
-    
-    # Log embedder configuration
-    logger.info(f"Using embedder provider: {embedder_config.provider}")
-    logger.info(f"Using embedder model: {embedder_config.model_name}")
-    
-    # Create embedder instance
-    embedder = EmbedderFactory.create_embedder(embedder_config)
-    
-    # Load vector store and index
-    vector_store = VectorStoreFactory.create_vector_store(vector_store_config)
+    # Load the vector store index
     index = vector_store.load()
-    nodes = vector_store.get_all_nodes() if hasattr(vector_store, 'get_all_nodes') else None
     
-    # Create custom query pipeline configuration
-    from core.config import (
-        QueryPipelineConfig, 
-        QueryTransformationConfig, 
-        RetrievalConfig, 
-        RerankerConfig, 
-        SynthesisConfig
-    )
-    
-    query_config = QueryPipelineConfig(
-        transformation=QueryTransformationConfig(
-            enable_query_expansion=True,
-            use_hyde=True,
-            hyde_prompt_template="Generate a comprehensive passage that would answer this question: {query}",
-            enable_query_rewriting=True,
-            rewriting_technique="instruct"
-        ),
-        retrieval=RetrievalConfig(
-            retriever_strategy="hybrid" if nodes else "vector",
-            similarity_top_k=7,
-            hybrid_alpha=0.7  # Weight more towards vector search
-        ),
-        reranker=RerankerConfig(
-            enable_reranking=True,
-            reranker_type="semantic",
-            rerank_top_n=5
-        ),
-        synthesis=SynthesisConfig(
-            synthesis_strategy="refine",
-            include_citations=True
-        )
-    )
+    # Check if we have a valid index
+    if not index:
+        logger.warning("No valid index available. Cannot run advanced query example.")
+        return
     
     # Create query pipeline with advanced configuration
     query_pipeline = QueryPipeline(
-        config=query_config,
+        config=query_pipeline_config,
         index=index,
         llm=query_llm,
-        embedder=embedder,  # Pass the embedder explicitly
+        embedder=embedder
     )
     
     # Run a complex query
@@ -525,60 +542,30 @@ def run_query_component_comparison():
     """Run a comparison of different query components."""
     print_section_header("Query Component Comparison")
     
-    # Create vector store configuration
-    from core.config import VectorStoreConfig
-    vector_store_config = VectorStoreConfig(
-            engine=os.getenv("VECTOR_STORE_ENGINE", "chroma"),
-            collection_name=os.getenv("VECTOR_STORE_COLLECTION", "unified_knowledge"),
-            distance_metric=os.getenv("VECTOR_STORE_DISTANCE_METRIC", "cosine"),
-            
-            # ChromaDB specific settings
-            vector_db_path=os.getenv("CHROMA_DB_PATH", "./vector_db"),
-            
-            # Qdrant specific settings
-            qdrant_location=os.getenv("QDRANT_LOCATION", "local"),
-            qdrant_url=os.getenv("QDRANT_URL"),
-            qdrant_api_key=os.getenv("QDRANT_API_KEY"),
-            qdrant_local_path=os.getenv("QDRANT_LOCAL_PATH", "./qdrant_db"),
-            qdrant_prefer_grpc=os.getenv("QDRANT_PREFER_GRPC", "False").lower() == "true"
-        )
+    # Load configuration and components
+    config, components = load_configuration()
     
-    # Create LLM provider for queries
-    from core.config import LLMConfig
-    from llm.providers import DefaultLLMProvider
+    # Extract components
+    llm_provider = components["llm_provider"]
+    embedder = components["embedder"]
+    vector_store = components["vector_store"]
     
-    llm_config = LLMConfig()
-    llm_config.query_llm.enabled = True
-    llm_config.query_llm.model_name = os.getenv("QUERY_LLM_MODEL")
-    llm_config.query_llm.provider = os.getenv("QUERY_LLM_PROVIDER")
-    llm_provider = DefaultLLMProvider(llm_config)
+    # Load the vector store index
+    index = vector_store.load()
+    
+    # Check if we have a valid index
+    if not index:
+        logger.warning("No valid index available. Cannot run query component comparison.")
+        return
+    
+    # Get the query LLM from the provider
     query_llm = llm_provider.get_query_llm()
     
-    if not query_llm:
-        logger.error("Could not initialize query LLM. Using default settings.")
-        from llama_index.llms import OpenAI
-        query_llm = OpenAI()
-    
-    # Create embedder with explicit configuration
-    embedder_config = EmbedderConfig(
-        provider=os.getenv("EMBEDDER_PROVIDER", "ollama"),
-        model_name=os.getenv("EMBEDDER_MODEL", "nomic-embed-text"),
-        api_key_env_var=os.getenv("EMBEDDER_API_KEY_ENV_VAR"),
-        api_base=os.getenv("EMBEDDER_API_BASE"),
-        embed_batch_size=int(os.getenv("EMBEDDER_BATCH_SIZE", "10")),
-        use_cache=os.getenv("EMBEDDER_USE_CACHE", "True").lower() == "true",
-        cache_dir=os.getenv("EMBEDDER_CACHE_DIR", "./.cache/embeddings")
-    )
-    
-    # Log embedder configuration
-    logger.info(f"Using embedder provider: {embedder_config.provider}")
-    logger.info(f"Using embedder model: {embedder_config.model_name}")
-    
-    # Create embedder instance
-    embedder = EmbedderFactory.create_embedder(embedder_config)
-
-    vector_store = VectorStoreFactory.create_vector_store(vector_store_config)
-    index = vector_store.load()
+    # Log configuration
+    logger.info(f"Using embedder provider: {config.embedder.provider}")
+    logger.info(f"Using embedder model: {config.embedder.model_name}")
+    logger.info(f"Using vector store engine: {config.vector_store.engine}")
+    logger.info(f"Using vector store collection: {config.vector_store.collection_name}")
     
     # Define the test query
     query = "What techniques are used for query transformation in the advanced RAG pipeline?"
@@ -604,16 +591,43 @@ def run_query_component_comparison():
     # Get retrieval results once
     from query.retrieval import EnhancedRetriever
     
-    # Create a direct LlamaIndex embedding model instead of using our custom wrapper
-    # This avoids the compatibility issue with get_agg_embedding_from_queries
+    # Force using Ollama for embeddings to avoid API key issues
     try:
-        if os.getenv("EMBEDDER_PROVIDER", "").lower() == "ollama":
-            from llama_index.embeddings.ollama import OllamaEmbedding
-            direct_embed_model = OllamaEmbedding(model_name=os.getenv("EMBEDDER_MODEL", "nomic-embed-text"))
-        else:
-            # Default to HuggingFace which doesn't need API keys
-            from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-            direct_embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        # Create a direct Ollama embedding model
+        from llama_index.embeddings.ollama import OllamaEmbedding
+        
+        # Get model name from config or use a default
+        model_name = "nomic-embed-text"  # Default to a reliable model
+        if config.embedder.provider.lower() == "ollama":
+            model_name = config.embedder.model_name or model_name
+        
+        # Configure API base URL
+        api_base = "http://localhost:11434"  # Default Ollama URL
+        if hasattr(config.embedder, 'api_base') and config.embedder.api_base:
+            api_base = config.embedder.api_base
+        
+        # Create the embedding model
+        direct_embed_model = OllamaEmbedding(
+            model_name=model_name,
+            base_url=api_base
+        )
+        
+        logger.info(f"Using Ollama embeddings with model: {model_name}")
+        
+        # If our embedder doesn't match this configuration, create a new one
+        if not hasattr(embedder, 'embed_model') or \
+           not isinstance(embedder.embed_model, OllamaEmbedding) or \
+           embedder.embed_model.model_name != model_name:
+            # Update the embedder for future use
+            from core.config import EmbedderConfig
+            from embedders.embedder_factory import EmbedderFactory
+            embedder_config = EmbedderConfig(
+                provider="ollama",
+                model_name=model_name,
+                api_base=api_base,
+                use_cache=True
+            )
+            embedder = EmbedderFactory.create_embedder(embedder_config)
     except Exception as e:
         logger.warning(f"Error creating embedding model: {e}. Using default embedding.")
         from llama_index.embeddings import DefaultEmbedding
@@ -640,10 +654,13 @@ def main():
     logger.info("Starting Query Module Examples")
     
     try:
+        # Load configuration once at the beginning
+        config, components = load_configuration()
+        
         # Run the examples
         #run_basic_query_example()
         run_advanced_query_example()
-        run_query_component_comparison()
+        #run_query_component_comparison()
         
     except Exception as e:
         logger.error(f"Error in examples: {str(e)}")

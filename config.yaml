@@ -1,0 +1,123 @@
+# Advanced RAG Pipeline - Production Configuration
+
+# Global settings
+project_name: advanced-rag-pipeline
+input_directory: ./data
+output_dir: ./output
+environment: production
+
+# Logging configuration
+logging:
+  level: WARNING
+  console: true
+  file_path: /var/log/rag-pipeline/app.log
+
+# Parallel processing settings
+parallel:
+  enabled: true
+  max_workers: 8  # Increased for production
+
+# Embedder configuration
+embedder:
+  # Using more robust OpenAI embeddings for production
+  provider: ollama
+  model_name: nomic-embed-text
+  embed_batch_size: 12  # Increased batch size for performance
+  embedder_api_base: http://localhost:11434
+  
+  # Caching settings
+  use_cache: true
+  cache_dir: ./.cache/embeddings
+  
+  # Fallback settings
+  fallback_provider: huggingface
+  fallback_model: BAAI/bge-small-en-v1.5
+
+# Vector store configuration
+vector_store:
+  # Using Qdrant cloud for production
+  engine: qdrant
+  collection_name: test_rag
+  distance_metric: cosine
+  
+  # Qdrant cloud settings
+  qdrant_location: cloud
+  qdrant_url: RAG_VECTORSTORECONFIG_QDRANT_URL
+  qdrant_api_key_env_var: QDRANT_API_KEY  # Will load API key from this environment variable
+  
+  # Advanced settings
+  qdrant_timeout: 15.0
+  qdrant_on_disk_payload: true
+
+# LLM configuration
+llm:
+  # Metadata LLM for document enrichment
+  metadata_llm:
+    provider: groq
+    model_name: llama-3.1-8b-instant
+    api_key_env_var: GROQ_API_KEY
+    temperature: 0.05  # Lower for more deterministic results
+  
+  # Using OpenAI for query LLM in production
+  query_llm:
+    provider: groq
+    model_name: llama-3.1-8b-instant
+    api_key_env_var: GROQ_API_KEY
+    temperature: 0.1
+    request_timeout: 120  # Increased timeout for complex queries
+  
+  # Using Anthropic for coding LLM in production
+  coding_llm:
+    provider: groq
+    model_name: llama-3.1-8b-instant
+    api_key_env_var: GROQ_API_KEY
+    temperature: 0.1
+    request_timeout: 120  # Increased timeout for complex queries
+  
+  # Enrichment controls
+  enrich_documents: true
+  enrich_code: true
+  
+  # LLM caching
+  use_cache: true
+  cache_dir: ./.cache/llm
+
+# Document registry configuration
+registry:
+  enabled: true
+  db_path: ./doc_reg_db/document_registry.db
+  reset_stalled_after_seconds: 1800  # Reduced for production
+
+# Query pipeline configuration
+query_pipeline:
+  # Increased timeout for production
+  timeout_seconds: 120
+  
+  # Query transformation
+  transformation:
+    enable_query_expansion: true
+    enable_query_rewriting: true
+    use_hyde: true
+  
+  # Using ensemble retrieval for production
+  retrieval:
+    retriever_strategy: ensemble
+    similarity_top_k: 10  # Increased for better recall
+    use_hybrid_search: true
+    hybrid_alpha: 0.7
+  
+  # Using Cohere reranker for production
+  reranker:
+    enable_reranking: true
+    reranker_type: semantic
+    rerank_top_n: 15  # Increased for better precision
+  
+  # Using tree synthesis for production
+  synthesis:
+    synthesis_strategy: tree
+    include_citations: true
+    tree_width: 4
+  
+  # Caching
+  cache_results: true
+  cache_dir: ./.cache/query_results

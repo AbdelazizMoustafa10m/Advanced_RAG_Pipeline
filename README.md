@@ -180,16 +180,49 @@ A critical aspect of the query module is ensuring embedding consistency between 
 - Registry statistics show document counts by type and status
 - Detailed listing of all tracked documents with their processing status
 
-## Configuration for Embedding and Vector Store
+## Configuration System
 
-- All options for embedding and vector store selection are set in `.env` or via `core/config.py` dataclasses.
-- Example configuration options:
+### Overview
+
+The Advanced RAG Pipeline uses a comprehensive configuration system with multiple layers:
+
+- **Pydantic Models** (`core/config.py`): Robust validation and type safety
+- **Configuration Manager** (`core/config_manager.py`): Centralized loading with clear precedence
+- **YAML Configuration** (`config.yaml`): Environment-specific settings
+- **Environment Variables**: Secure credential management
+- **Command-line Arguments**: Runtime overrides
+
+### Configuration Loading Precedence
+
+The system follows a clear precedence order (lowest to highest):
+
+1. Default values from Pydantic models
+2. Environment-specific configuration files (e.g., `config.development.yaml`)
+3. Main configuration file (`config.yaml`)
+4. Environment variables (prefixed with `RAG_`)
+5. Explicit overrides (e.g., command-line arguments)
+
+### Example Configuration Options
+
+- **Embedding**:
   - `EMBEDDER_PROVIDER` (huggingface/openai/cohere/ollama/vertex/bedrock)
   - `EMBEDDER_MODEL` (e.g., BAAI/bge-small-en-v1.5)
   - `EMBEDDER_BATCH_SIZE`, `EMBEDDER_CACHE_PATH`, etc.
+
+- **Vector Store**:
   - `VECTOR_STORE_ENGINE` (chroma/qdrant/simple)
   - `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_LOCATION`, etc.
-- See `.env_example` for all available options and usage patterns.
+
+- **LLM**:
+  - Separate configurations for metadata, query, and coding LLMs
+  - `LLM_METADATA_PROVIDER`, `LLM_METADATA_MODEL`, etc.
+  - `LLM_QUERY_PROVIDER`, `LLM_QUERY_MODEL`, etc.
+
+- **Query Pipeline**:
+  - Transformation, retrieval, reranking, and synthesis settings
+  - `QUERY_RETRIEVER_STRATEGY`, `QUERY_SIMILARITY_TOP_K`, etc.
+
+See `.env.example` for all available environment variables and `config.yaml` for YAML configuration examples.
 
 ## Examples
 
