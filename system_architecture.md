@@ -245,21 +245,70 @@ graph TD
 *   **Consolidated Formatting:** The `_apply_template` method (currently *within* the Formatter, as per user confirmation) creates a single `formatted_metadata` key containing a combined view of formatted structural and enriched metadata.
 *   **Exclusion Control:** The `DoclingMetadataFormatter` is the *final step* that sets `excluded_llm_metadata_keys` and `excluded_embed_metadata_keys`. It uses its `config.include_in_...` lists to determine which keys (including `formatted_metadata`, `formatted_source`, etc., and potentially enriched keys like `title` if added to the config) should be visible in the final output for LLM and Embedding modes. Raw keys (`origin`, `prov`, `doc_items`) are explicitly excluded.
 
-## 7. Configuration
+## 7. Configuration System
 
-Configuration is primarily managed through dataclasses in `core/config.py`. Key aspects include:
+### Configuration Architecture
 
-*   Input/Output paths (`UnifiedConfig`).
-*   LLM models, providers, API keys, and role-specific settings (`LLMConfig`, `LLMSettings`).
-*   Flags to enable/disable document and code enrichment (`LLMConfig.enrich_documents`, `LLMConfig.enrich_code`).
-*   Document detection settings (`DetectorConfig`).
-*   Chunking parameters for code and documents (`CodeProcessorConfig`, `DoclingConfig`).
-*   Embedding models, providers, and settings (`EmbedderConfig`).
-*   Vector store settings (`VectorStoreConfig`).
-*   Document registry settings (`RegistryConfig`).
-*   Metadata formatting/inclusion (`FormattingConfig` within `DoclingMetadataFormatter`).
+The system uses a comprehensive configuration architecture with multiple layers:
 
-Environment variables (via `.env`) are used for sensitive information like API keys.
+1. **Pydantic Models (`core/config.py`)**: Provides robust validation, documentation, and type safety for all configuration settings.
+2. **Configuration Manager (`core/config_manager.py`)**: Centralizes loading from multiple sources with clear precedence.
+3. **Environment Variables**: Supports sensitive credentials and deployment-specific settings.
+4. **YAML Configuration Files**: Enables environment-specific configuration (development, testing, staging, production).
+5. **Command-line Arguments**: Allows runtime overrides for key settings.
+
+### Configuration Loading Precedence
+
+The configuration system follows a clear precedence order (lowest to highest):
+
+1. Default values from Pydantic models
+2. Environment-specific configuration files (e.g., `config.development.yaml`)
+3. Main configuration file (`config.yaml`)
+4. Environment variables (prefixed with `RAG_`)
+5. Explicit overrides (e.g., command-line arguments)
+
+### Key Configuration Components
+
+* **UnifiedConfig**: Main configuration model that includes all component configurations
+* **ConfigManager**: Handles loading, validation, merging, and caching of configuration
+* **ApplicationEnvironment**: Enum for different deployment environments
+* **Component-specific configs**: Specialized configuration for each system component:
+  * LLM settings (`LLMConfig`, `LLMSettings`) with separate configurations for metadata, query, and coding LLMs
+  * Document detection settings (`DetectorConfig`)
+  * Chunking parameters (`CodeProcessorConfig`, `DoclingConfig`)
+  * Embedding models and providers (`EmbedderConfig`)
+  * Vector store settings (`VectorStoreConfig`) with secure API key handling
+  * Document registry settings (`RegistryConfig`)
+  * Query pipeline configuration (`QueryPipelineConfig`) with nested configurations for transformation, retrieval, reranking, and synthesis
+
+### Secure Credential Management
+
+The system implements secure patterns for handling sensitive credentials:
+
+* API keys are loaded from environment variables, not hardcoded
+* Environment variable names are configurable (e.g., `api_key_env_var: "OPENAI_API_KEY"`)
+* The `.env` file is used for local development but excluded from version control
+* Production deployments use system environment variables
+
+### Configuration Validation
+
+Pydantic models provide comprehensive validation:
+
+* Type checking for all configuration values
+* Range validation for numeric parameters (e.g., `ge=0.0, le=1.0` for confidence thresholds)
+* Enum validation for categorical parameters
+* Cross-field validation using model validators
+* Automatic directory creation for output paths
+
+### Application Initialization
+
+The application initialization flow (`app_config.py` and `main.py`) uses the configuration system:
+
+1. Parse command-line arguments
+2. Initialize ConfigManager with appropriate paths
+3. Load unified configuration with overrides
+4. Initialize components based on configuration
+5. Run the pipeline with initialized components
 
 ## 8. Extensibility
 

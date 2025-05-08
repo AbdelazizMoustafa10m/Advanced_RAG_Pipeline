@@ -78,6 +78,22 @@ class DefaultLLMProvider(ILLMProvider):
                      # Pass additional kwargs if needed
                      **settings.additional_kwargs
                  )
+            elif provider_name == "ollama":
+                # Import Ollama LLM
+                from llama_index.llms.ollama import Ollama
+                
+                # Configure API base URL if provided
+                api_base = settings.api_base or "http://localhost:11434"
+                
+                # Initialize Ollama LLM
+                llm_instance = Ollama(
+                    model=settings.model_name,
+                    base_url=api_base,
+                    temperature=settings.temperature,
+                    request_timeout=settings.request_timeout,
+                    # Pass additional kwargs if needed
+                    **settings.additional_kwargs
+                )
             # --- Add other providers here (Anthropic, HuggingFace, etc.) ---
             # elif provider_name == "huggingface":
             #     from llama_index.llms.huggingface import HuggingFaceLLM

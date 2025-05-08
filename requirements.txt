@@ -52,3 +52,4 @@ sentence-transformers>=2.3.0 # Cross-encoders for reranking
 diskcache>=5.6.1
 lru-dict>=1.3.0
 cohere
+pyyaml
