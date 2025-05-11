@@ -75,8 +75,8 @@ llm:
     request_timeout: 120  # Increased timeout for complex queries
   
   # Enrichment controls
-  enrich_documents: true
-  enrich_code: true
+  enrich_documents: false
+  enrich_code: false
   
   # LLM caching
   use_cache: true

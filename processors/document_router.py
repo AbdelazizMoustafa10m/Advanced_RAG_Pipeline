@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class DocumentTypeRouter(TransformComponent):
     """Routes documents to the appropriate parser based on their type."""
     
-    docling_parser: Any = Field(description="Parser for document files")
+    document_processor: Any = Field(description="Processor for document files")
     code_processor: Any = Field(description="Processor for code files")
     document_metadata_enricher: Optional[Any] = Field(default=None, description="Metadata enricher for document files")
     code_metadata_enricher: Optional[Any] = Field(default=None, description="Metadata enricher for code files")
@@ -45,10 +45,10 @@ class DocumentTypeRouter(TransformComponent):
                 doc.metadata["file_type"] = "code"
                 
             if doc_type == "document":
-                # Use Docling parser for document files
+                # Use document processor for document files
                 try:
-                    parsed_nodes = self.docling_parser.get_nodes_from_documents([doc])
-                    logger.info(f"Successfully parsed document {doc.doc_id} with DoclingNodeParser")
+                    parsed_nodes = self.document_processor.process_document(doc)
+                    logger.info(f"Successfully processed document {doc.doc_id} with TechnicalDocumentProcessor")
                     
                     # Add node type metadata for enrichment
                     for node in parsed_nodes:
@@ -58,7 +58,7 @@ class DocumentTypeRouter(TransformComponent):
                     document_nodes.extend(parsed_nodes)
                     all_nodes.extend(parsed_nodes)
                 except Exception as e:
-                    logger.error(f"Error parsing document {doc.doc_id} with DoclingNodeParser: {str(e)}")
+                    logger.error(f"Error processing document {doc.doc_id} with TechnicalDocumentProcessor: {str(e)}")
                     # Fallback to code processor if docling parser fails
                     try:
                         parsed_nodes = self.code_processor.process_document(doc)

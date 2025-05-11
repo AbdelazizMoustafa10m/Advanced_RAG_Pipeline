@@ -308,8 +308,8 @@ class DoclingConfig(BaseModel):
 
     # Chunking settings
     chunking_strategy: str = Field(
-        default="semantic", 
-        description="Chunking strategy ('semantic', 'fixed', or 'hierarchical')"
+        default="hybrid", 
+        description="Chunking strategy ('hybrid' or 'hierarchical')"
     )
     chunk_size: int = Field(
         default=1000, 
@@ -334,8 +334,8 @@ class DoclingConfig(BaseModel):
     @classmethod
     def validate_chunking_strategy(cls, v: str) -> str:
         """Validate chunking strategy."""
-        if v not in ["semantic", "fixed", "hierarchical"]:
-            raise ValueError("Chunking strategy must be 'semantic', 'fixed', or 'hierarchical'")
+        if v not in ["hybrid", "hierarchical"]:
+            raise ValueError("Chunking strategy must be 'hybrid' or 'hierarchical'")
         return v
 
 
