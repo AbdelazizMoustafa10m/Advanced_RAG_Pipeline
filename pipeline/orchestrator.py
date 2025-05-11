@@ -155,7 +155,7 @@ class PipelineOrchestrator:
         # The router itself will call the appropriate processor's process_document,
         # which internally handles enrichment if the enricher instance exists.
         self.document_router = DocumentTypeRouter(
-            docling_parser=self.docling_parser,
+            document_processor=self.document_processor,
             code_processor=self.code_processor, # Pass the whole processor
             # Pass enricher instances; router will check if they are None before calling enrich
             document_metadata_enricher=document_metadata_enricher,
